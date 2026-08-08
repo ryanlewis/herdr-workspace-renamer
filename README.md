@@ -1,22 +1,22 @@
 # herdr Workspace Renamer
 
 A [herdr](https://herdr.dev) plugin that syncs agent session names onto herdr
-workspace labels. When you name your session — `/rename` in Claude Code, or
-naming a thread in Codex — the containing workspace label follows, unless the
-workspace already has a non-default name, in which case it is never touched.
-Manual names win, permanently.
+workspace labels. When you name your session — `/rename` in Claude Code and
+Codex alike — the containing workspace label follows, unless the workspace
+already has a non-default name, in which case it is never touched. Manual
+names win, permanently.
 
 ## Why
 
 Workspace labels default to the folder name of the root pane, so several
 workspaces opened in the same directory all look alike in the sidebar. The
-Claude session inside usually *has* a good name — this plugin makes the label
+agent session inside usually *has* a good name — this plugin makes the label
 follow it.
 
 ## Behaviour
 
-- Renaming a Claude session (`/rename`) in a default-labelled workspace renames
-  the workspace to match.
+- Renaming a session (`/rename`) in a default-labelled workspace renames the
+  workspace to match.
 - Renaming the session again updates a label the plugin itself set.
 - A workspace you named yourself — manually, via `worktree create --label`, or
   any other way — is never touched, even if the session is renamed later.
