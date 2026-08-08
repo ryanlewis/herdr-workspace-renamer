@@ -67,8 +67,8 @@ function readRegistry() {
 // the user typed what they want.
 function clean(name) {
   return name
+    .replace(/\s+/g, " ") // before control-strip so \t and \n become spaces
     .replace(/[\x00-\x1f\x7f]/g, "")
-    .replace(/\s+/g, " ")
     .trim()
     .slice(0, MAX_LABEL)
     .trim();
