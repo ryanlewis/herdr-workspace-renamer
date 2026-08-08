@@ -44,7 +44,8 @@ function herdr(...args) {
       `herdr ${args.join(" ")}: exit ${r.status} ${(r.stderr || "").trim()}`,
     );
   }
-  return JSON.parse(r.stdout);
+  // Some verbs (e.g. report-metadata) succeed silently with no output.
+  return r.stdout.trim() === "" ? null : JSON.parse(r.stdout);
 }
 
 // ---- sidebar dir metadata ---------------------------------------------
@@ -61,14 +62,15 @@ const tildify = (p) =>
 function reportDirToken(wsId, cwd) {
   if (DRY) return;
   try {
+    // Workspace id first: herdr's parser rejects options-then-positional here.
     herdr(
       "workspace",
       "report-metadata",
+      wsId,
       "--source",
       METADATA_SOURCE,
       "--token",
       `dir=${tildify(cwd)}`,
-      wsId,
     );
   } catch (e) {
     warn(`report dir metadata for ${wsId} failed: ${e.message}`);
@@ -81,11 +83,11 @@ function clearDirToken(wsId) {
     herdr(
       "workspace",
       "report-metadata",
+      wsId,
       "--source",
       METADATA_SOURCE,
       "--clear-token",
       "dir",
-      wsId,
     );
   } catch (e) {
     warn(`clear dir metadata for ${wsId} failed: ${e.message}`);

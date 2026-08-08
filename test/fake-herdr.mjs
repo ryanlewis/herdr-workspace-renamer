@@ -29,7 +29,7 @@ if (group === "agent" && verb === "list") {
   process.stdout.write(JSON.stringify({ id: "cli:workspace:rename", result: { ok: true } }));
 } else if (group === "workspace" && verb === "report-metadata") {
   appendFileSync(process.env.FAKE_HERDR_META, JSON.stringify(rest) + "\n");
-  process.stdout.write(JSON.stringify({ id: "cli:workspace:report-metadata", result: { ok: true } }));
+  // real herdr succeeds silently here — no stdout
 } else {
   process.stderr.write(`fake-herdr: unknown command ${group} ${verb}\n`);
   process.exit(1);

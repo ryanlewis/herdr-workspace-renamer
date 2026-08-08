@@ -508,7 +508,7 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
   check("rename reports ~-shortened dir metadata",
     r.calls.length === 1 &&
       r.meta.length === 1 &&
-      r.meta[0].join(" ") === "--source io.rlew.workspace-renamer --token dir=~/dev/notes w1",
+      r.meta[0].join(" ") === "w1 --source io.rlew.workspace-renamer --token dir=~/dev/notes",
     JSON.stringify(r.meta) + r.stderr);
 }
 
@@ -542,7 +542,7 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
   check("user override clears dir metadata",
     r.calls.length === 0 &&
       r.meta.length === 1 &&
-      r.meta[0].join(" ") === "--source io.rlew.workspace-renamer --clear-token dir w1",
+      r.meta[0].join(" ") === "w1 --source io.rlew.workspace-renamer --clear-token dir",
     JSON.stringify(r.meta) + r.stderr);
 }
 
