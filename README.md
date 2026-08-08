@@ -1,6 +1,6 @@
 # herdr Workspace Renamer
 
-A [herdr](https://github.com/ryanlewis) plugin that syncs Claude Code session
+A [herdr](https://herdr.dev) plugin that syncs Claude Code session
 names onto herdr workspace labels. When you `/rename` a session, the containing
 workspace label follows — unless the workspace already has a non-default name,
 in which case it is never touched (manual names win, permanently).
