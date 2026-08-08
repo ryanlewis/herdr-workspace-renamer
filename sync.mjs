@@ -15,6 +15,8 @@ import {
   statSync,
   openSync,
   closeSync,
+  renameSync,
+  unlinkSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, basename } from "node:path";
@@ -25,6 +27,7 @@ const HERDR = process.env.HERDR_BIN_PATH || "herdr";
 const STATE_DIR = process.env.HERDR_PLUGIN_STATE_DIR || null;
 const REGISTRY_DIR = join(homedir(), ".claude", "sessions");
 const DEBOUNCE_MS = 250;
+const LOCK_STALE_MS = 30_000;
 const MAX_LABEL = 32;
 
 const warn = (msg) => process.stderr.write(`workspace-renamer: ${msg}\n`);
@@ -162,12 +165,50 @@ function writeState(state) {
   if (!STATE_DIR || DRY) return;
   try {
     mkdirSync(STATE_DIR, { recursive: true });
-    writeFileSync(
-      join(STATE_DIR, "state.json"),
-      JSON.stringify(state, null, 2) + "\n",
-    );
+    // Atomic replace: a torn state.json would make readState() return {} in a
+    // concurrent sweep, which the guard would misread as "user owns these
+    // workspaces" — permanently. Write-then-rename makes that unobservable.
+    const tmp = join(STATE_DIR, `state.json.tmp-${process.pid}`);
+    writeFileSync(tmp, JSON.stringify(state, null, 2) + "\n");
+    renameSync(tmp, join(STATE_DIR, "state.json"));
   } catch (e) {
     warn(`state write failed: ${e.message}`);
+  }
+}
+
+// Serialize whole sweeps: overlapping event-triggered processes would race on
+// read-modify-write of state.json (last writer drops the other's entries, with
+// the same permanent-lockout consequence as a torn read). Losing the lock just
+// means another sweep is reconciling right now — FR7 covers us on the next
+// event. A lock older than LOCK_STALE_MS is from a crashed sweep and is stolen
+// (two simultaneous stealers are possible but need a 30s-stale lock AND a
+// same-instant burst; atomic state writes bound the damage to one lost entry).
+function acquireLock() {
+  if (!STATE_DIR || DRY) return true; // nothing to serialize against
+  const lock = join(STATE_DIR, ".lock");
+  try {
+    mkdirSync(STATE_DIR, { recursive: true });
+    writeFileSync(lock, String(process.pid), { flag: "wx" });
+    return true;
+  } catch {
+    try {
+      if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) {
+        writeFileSync(lock, String(process.pid));
+        return true;
+      }
+    } catch {
+      // lock vanished or unreadable — skip this sweep, next event self-heals
+    }
+    return false;
+  }
+}
+
+function releaseLock() {
+  if (!STATE_DIR || DRY) return;
+  try {
+    unlinkSync(join(STATE_DIR, ".lock"));
+  } catch {
+    // already gone — fine
   }
 }
 
@@ -287,8 +328,12 @@ function main() {
   if (stateDirty) writeState(state);
 }
 
-try {
-  main();
-} catch (e) {
-  warn(e.message); // fail safe: any surprise is a no-op
+if (acquireLock()) {
+  try {
+    main();
+  } catch (e) {
+    warn(e.message); // fail safe: any surprise is a no-op
+  } finally {
+    releaseLock();
+  }
 }

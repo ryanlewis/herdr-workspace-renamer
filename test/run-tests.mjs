@@ -1,7 +1,15 @@
 #!/usr/bin/env node
 // Offline tests for sync.mjs: fake herdr CLI + fake ~/.claude/sessions
 // registry, exercising each functional requirement from the spec.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  existsSync,
+} from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,7 +35,7 @@ const agent = (sessionId, paneId, tabId, wsId, type = "claude") => ({
 });
 
 // One sandbox per scenario: fresh HOME, world file, calls log, state dir.
-function run({ sessions = [], codexIndex, world, state }) {
+function run({ sessions = [], codexIndex, world, state, lockAgeMs }) {
   const dir = mkdtempSync(join(tmpdir(), "wsren-test-"));
   const home = join(dir, "home");
   mkdirSync(join(home, ".claude", "sessions"), { recursive: true });
@@ -48,6 +56,12 @@ function run({ sessions = [], codexIndex, world, state }) {
   const stateDir = join(dir, "state");
   mkdirSync(stateDir);
   if (state) writeFileSync(join(stateDir, "state.json"), JSON.stringify(state));
+  if (lockAgeMs !== undefined) {
+    const lock = join(stateDir, ".lock");
+    writeFileSync(lock, "99999");
+    const t = (Date.now() - lockAgeMs) / 1000;
+    utimesSync(lock, t, t);
+  }
 
   const r = spawnSync(process.execPath, [syncScript], {
     encoding: "utf8",
@@ -66,8 +80,9 @@ function run({ sessions = [], codexIndex, world, state }) {
   try {
     stateAfter = JSON.parse(readFileSync(join(stateDir, "state.json"), "utf8"));
   } catch {}
+  const lockLeft = existsSync(join(stateDir, ".lock"));
   rmSync(dir, { recursive: true, force: true });
-  return { calls, stateAfter, stderr: r.stderr, status: r.status };
+  return { calls, stateAfter, lockLeft, stderr: r.stderr, status: r.status };
 }
 
 const ws = (id, label) => ({ workspace_id: id, label, number: 1, tab_count: 1, pane_count: 1 });
@@ -308,6 +323,31 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
   check("mixed sweep: claude and codex workspaces both sync",
     r.calls.length === 2 && byWs.w1 === "claude-name" && byWs.w2 === "codex-name",
     JSON.stringify(r.calls) + r.stderr);
+}
+
+// Concurrency: a fresh lock (another sweep in flight) → skip entirely
+{
+  const world = {
+    agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+    workspaces: [ws("w1", "notes")],
+    panes: rootPane("w1", "/Users/ryan/dev/notes"),
+  };
+  const sessions = [{ pid: 1, sessionId: "s1", name: "wants-this" }];
+  const fresh = run({ sessions, world, lockAgeMs: 0 });
+  check("fresh lock held → sweep skipped, lock preserved",
+    fresh.calls.length === 0 && fresh.lockLeft && fresh.status === 0,
+    `calls=${JSON.stringify(fresh.calls)} lockLeft=${fresh.lockLeft}`);
+
+  // …but a stale lock (crashed sweep) is stolen and the sweep proceeds
+  const stale = run({ sessions, world, lockAgeMs: 60_000 });
+  check("stale lock stolen → sweep proceeds, lock released",
+    stale.calls.length === 1 && stale.calls[0][1] === "wants-this" && !stale.lockLeft,
+    `calls=${JSON.stringify(stale.calls)} lockLeft=${stale.lockLeft}${stale.stderr}`);
+
+  // …and a normal run leaves no lock behind
+  const normal = run({ sessions, world });
+  check("normal run releases the lock", normal.calls.length === 1 && !normal.lockLeft,
+    `calls=${JSON.stringify(normal.calls)} lockLeft=${normal.lockLeft}`);
 }
 
 // D5/stale: session id not in registry → skip whole workspace
