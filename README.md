@@ -121,6 +121,14 @@ until they return to their default label. Their `$dir` sidebar token also
 stops being refreshed or cleared; if one lingers, remove it with
 `herdr workspace report-metadata <ws> --source io.rlew.workspace-renamer --clear-token dir`.
 
+## Coexistence
+
+Pairs with [herdr-tab-renamer](https://github.com/ryanlewis/herdr-tab-renamer),
+which labels *tabs* after their live content (agent session titles, shell
+directories) while this plugin syncs agent session *names* onto *workspace*
+labels. The two own different labels (workspaces vs tabs) and never conflict;
+both are no-op-happy global reconciles, so sharing trigger events is cheap.
+
 ## Test
 
 ```sh
