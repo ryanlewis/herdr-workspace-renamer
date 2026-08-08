@@ -4,6 +4,10 @@
 // `workspace rename` calls to $FAKE_HERDR_CALLS.
 import { readFileSync, appendFileSync } from "node:fs";
 
+// Only meaningful when spawned by the test harness; bail quietly if the
+// node --test runner (or anything else) executes this file directly.
+if (!process.env.FAKE_HERDR_WORLD) process.exit(0);
+
 const world = JSON.parse(readFileSync(process.env.FAKE_HERDR_WORLD, "utf8"));
 const [group, verb, ...rest] = process.argv.slice(2);
 

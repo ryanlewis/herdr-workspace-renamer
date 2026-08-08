@@ -122,9 +122,11 @@ until they return to their default label.
 ## Test
 
 ```sh
-node test/run-tests.mjs   # offline: fake herdr CLI + fake session registry
-node sync.mjs --dry-run   # against live herdr state, prints planned renames
+node --test "test/*.test.mjs"   # offline: fake herdr CLI + fake session registries
+node sync.mjs --dry-run         # against live herdr state, prints planned renames
 ```
+
+Tests use the built-in `node:test` runner — Node ≥ 20 for development.
 
 ## Caveats
 

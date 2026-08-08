@@ -1,6 +1,8 @@
-#!/usr/bin/env node
 // Offline tests for sync.mjs: fake herdr CLI + fake session registries,
-// exercising every rename, guard, and fail-safe behaviour.
+// exercising every rename, guard, and fail-safe behaviour. Each scenario runs
+// in its own sandbox (fresh HOME, world state, plugin state dir).
+import { test } from "node:test";
+import assert from "node:assert/strict";
 import {
   mkdtempSync,
   mkdirSync,
@@ -19,12 +21,6 @@ const here = dirname(fileURLToPath(import.meta.url));
 const syncScript = join(here, "..", "sync.mjs");
 const fakeHerdr = join(here, "fake-herdr.mjs");
 
-let failures = 0;
-const check = (name, ok, detail = "") => {
-  console.log(`${ok ? "ok  " : "FAIL"} ${name}${ok || !detail ? "" : ` — ${detail}`}`);
-  if (!ok) failures++;
-};
-
 const agent = (sessionId, paneId, tabId, wsId, type = "claude") => ({
   agent: type,
   agent_session: { agent: type, kind: "id", source: `herdr:${type}`, value: sessionId },
@@ -34,7 +30,10 @@ const agent = (sessionId, paneId, tabId, wsId, type = "claude") => ({
   workspace_id: wsId,
 });
 
-// One sandbox per scenario: fresh HOME, world file, calls log, state dir.
+const ws = (id, label) => ({ workspace_id: id, label, number: 1, tab_count: 1, pane_count: 1 });
+const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd } });
+
+// One sandbox per scenario: fresh HOME, world file, calls/meta logs, state dir.
 function run({ sessions = [], codexIndex, world, state, lockAgeMs }) {
   const dir = mkdtempSync(join(tmpdir(), "wsren-test-"));
   const home = join(dir, "home");
@@ -93,11 +92,7 @@ function run({ sessions = [], codexIndex, world, state, lockAgeMs }) {
   return { calls, meta, stateAfter, lockLeft, stderr: r.stderr, status: r.status };
 }
 
-const ws = (id, label) => ({ workspace_id: id, label, number: 1, tab_count: 1, pane_count: 1 });
-const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd } });
-
-// A user-renamed session in a default-labelled workspace renames it
-{
+test("user-named session renames default-labelled workspace", () => {
   const r = run({
     sessions: [{ pid: 1, sessionId: "s1", name: "my-cool-task" }],
     world: {
@@ -106,14 +101,11 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
       panes: rootPane("w1", "/Users/ryan/dev/notes"),
     },
   });
-  check("user-named session renames default-labelled workspace",
-    r.calls.length === 1 && r.calls[0][0] === "w1" && r.calls[0][1] === "my-cool-task",
-    JSON.stringify(r.calls) + r.stderr);
-  check("rename recorded in plugin state", r.stateAfter.w1 === "my-cool-task");
-}
+  assert.deepEqual(r.calls, [["w1", "my-cool-task"]], r.stderr);
+  assert.equal(r.stateAfter.w1, "my-cool-task", "rename recorded in plugin state");
+});
 
-// Label equals our last write → a re-rename follows
-{
+test("re-rename updates a label the plugin set", () => {
   const r = run({
     sessions: [{ pid: 1, sessionId: "s1", name: "second-name" }],
     world: {
@@ -123,13 +115,10 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
     },
     state: { w1: "first-name" },
   });
-  check("re-rename updates a label the plugin set",
-    r.calls.length === 1 && r.calls[0][1] === "second-name",
-    JSON.stringify(r.calls) + r.stderr);
-}
+  assert.deepEqual(r.calls, [["w1", "second-name"]], r.stderr);
+});
 
-// Manual label (≠ default, ≠ state) → untouched, state dropped
-{
+test("manually named workspace never touched; state entry dropped", () => {
   const r = run({
     sessions: [{ pid: 1, sessionId: "s1", name: "plugin-wants-this" }],
     world: {
@@ -139,12 +128,11 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
     },
     state: { w1: "old-plugin-name" },
   });
-  check("manually named workspace never touched", r.calls.length === 0, JSON.stringify(r.calls));
-  check("state entry dropped when user overrides label", !("w1" in r.stateAfter), JSON.stringify(r.stateAfter));
-}
+  assert.deepEqual(r.calls, []);
+  assert.ok(!("w1" in r.stateAfter), "state entry dropped when user overrides label");
+});
 
-// Auto-derived name → no-op
-{
+test("derived session name never renames", () => {
   const r = run({
     sessions: [{ pid: 1, sessionId: "s1", name: "notes-27", nameSource: "derived" }],
     world: {
@@ -153,11 +141,10 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
       panes: rootPane("w1", "/Users/ryan/dev/notes"),
     },
   });
-  check("derived session name never renames", r.calls.length === 0, JSON.stringify(r.calls));
-}
+  assert.deepEqual(r.calls, []);
+});
 
-// Only the primary agent (lowest pane of first tab) drives the label
-{
+test("guest session rename ignored — only the primary agent drives the label", () => {
   const r = run({
     sessions: [
       { pid: 1, sessionId: "primary", name: "prim-3f", nameSource: "derived" },
@@ -172,11 +159,10 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
       panes: rootPane("w1", "/Users/ryan/dev/notes"),
     },
   });
-  check("guest session rename ignored", r.calls.length === 0, JSON.stringify(r.calls));
-}
+  assert.deepEqual(r.calls, []);
+});
 
-// Flip side: a user-named primary wins even with a guest present
-{
+test("primary drives the label regardless of agent list order", () => {
   const r = run({
     sessions: [
       { pid: 1, sessionId: "primary", name: "primary-name" },
@@ -191,13 +177,10 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
       panes: rootPane("w1", "/Users/ryan/dev/notes"),
     },
   });
-  check("primary drives the label (order-independent)",
-    r.calls.length === 1 && r.calls[0][1] === "primary-name",
-    JSON.stringify(r.calls) + r.stderr);
-}
+  assert.deepEqual(r.calls, [["w1", "primary-name"]], r.stderr);
+});
 
-// Name already matches the label → no rename call at all
-{
+test("no-op when label already matches", () => {
   const r = run({
     sessions: [{ pid: 1, sessionId: "s1", name: "notes" }],
     world: {
@@ -206,11 +189,10 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
       panes: rootPane("w1", "/Users/ryan/dev/notes"),
     },
   });
-  check("no-op when label already matches", r.calls.length === 0, JSON.stringify(r.calls));
-}
+  assert.deepEqual(r.calls, []);
+});
 
-// Weird names get cleaned, not slugged
-{
+test("clean(): whitespace collapsed, control chars stripped, capped at 32", () => {
   const r = run({
     sessions: [{ pid: 1, sessionId: "s1", name: "  Fix\tthe   thing\x07 " + "x".repeat(60) }],
     world: {
@@ -219,15 +201,14 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
       panes: rootPane("w1", "/Users/ryan/dev/notes"),
     },
   });
-  const got = r.calls[0]?.[1] ?? "";
-  check("clean(): collapsed, control-stripped, capped at 32",
-    r.calls.length === 1 && got.startsWith("Fix the thing") && got.length <= 32 && !/[\x00-\x1f\x7f]/.test(got),
-    JSON.stringify(got));
-}
+  assert.equal(r.calls.length, 1, r.stderr);
+  const got = r.calls[0][1];
+  assert.ok(got.startsWith("Fix the thing"), got);
+  assert.ok(got.length <= 32, got);
+  assert.ok(!/[\x00-\x1f\x7f]/.test(got), got);
+});
 
-// Provider seam: primary agent of a type with no provider → whole workspace
-// skips, even when a user-named claude guest is present.
-{
+test("primary agent of a type with no provider skips the workspace", () => {
   const r = run({
     sessions: [{ pid: 1, sessionId: "guest", name: "guest-renamed" }],
     world: {
@@ -239,13 +220,10 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
       panes: rootPane("w1", "/Users/ryan/dev/notes"),
     },
   });
-  check("unmatched primary agent type → workspace skipped", r.calls.length === 0,
-    JSON.stringify(r.calls) + r.stderr);
-}
+  assert.deepEqual(r.calls, [], r.stderr);
+});
 
-// A primary pane herdr hasn't joined yet (no agent_session) blocks its tab —
-// primacy never falls through to a same-tab guest.
-{
+test("unjoined primary blocks its tab — same-tab guest never drives", () => {
   const noSession = agent("x", "w1:p1", "w1:t1", "w1", "codex");
   delete noSession.agent_session;
   const r = run({
@@ -256,13 +234,10 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
       panes: rootPane("w1", "/Users/ryan/dev/notes"),
     },
   });
-  check("unjoined primary blocks workspace (guest never drives)",
-    r.calls.length === 0, JSON.stringify(r.calls) + r.stderr);
-}
+  assert.deepEqual(r.calls, [], r.stderr);
+});
 
-// …but a tab herdr couldn't join at all doesn't block the workspace: the
-// first joinable tab's agent is primary.
-{
+test("unjoinable first tab falls through to the next tab's agent", () => {
   const noSession = agent("x", "w1:p1", "w1:t1", "w1", "codex");
   delete noSession.agent_session;
   const r = run({
@@ -273,14 +248,10 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
       panes: rootPane("w1", "/Users/ryan/dev/notes"),
     },
   });
-  check("unjoinable first tab falls through to next tab's agent",
-    r.calls.length === 1 && r.calls[0][1] === "tab-two-name",
-    JSON.stringify(r.calls) + r.stderr);
-}
+  assert.deepEqual(r.calls, [["w1", "tab-two-name"]], r.stderr);
+});
 
-// An empty-string session id is never a join key — neither as an agent's
-// session value nor as a registry/index entry id.
-{
+test("empty-string session id never joins", () => {
   const r = run({
     codexIndex: [
       { id: "", thread_name: "stray-name", updated_at: "2026-08-08T21:40:59Z" },
@@ -291,13 +262,68 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
       panes: rootPane("w1", "/Users/ryan/dev/notes"),
     },
   });
-  check("empty-string session id never joins", r.calls.length === 0,
-    JSON.stringify(r.calls) + r.stderr);
-}
+  assert.deepEqual(r.calls, [], r.stderr);
+});
 
-// Codex: a later tombstone entry (thread_name no longer a string) clears the
-// name instead of leaving the stale one in force
-{
+test("codex named thread renames default-labelled workspace", () => {
+  const r = run({
+    codexIndex: [
+      { id: "cdx-1", thread_name: "codex-task-name", updated_at: "2026-08-08T21:40:59Z" },
+    ],
+    world: {
+      agents: [agent("cdx-1", "w1:p1", "w1:t1", "w1", "codex")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "codex-task-name"]], r.stderr);
+});
+
+test("codex unnamed session (absent from index) never renames", () => {
+  const r = run({
+    codexIndex: [
+      { id: "other", thread_name: "someone-else", updated_at: "2026-08-08T21:40:59Z" },
+    ],
+    world: {
+      agents: [agent("cdx-unnamed", "w1:p1", "w1:t1", "w1", "codex")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [], r.stderr);
+});
+
+test("codex duplicate ids: newest entry wins (re-rename)", () => {
+  const r = run({
+    codexIndex: [
+      { id: "cdx-1", thread_name: "old-name", updated_at: "2026-08-08T21:00:00Z" },
+      { id: "cdx-1", thread_name: "new-name", updated_at: "2026-08-08T22:00:00Z" },
+    ],
+    world: {
+      agents: [agent("cdx-1", "w1:p1", "w1:t1", "w1", "codex")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "new-name"]], r.stderr);
+});
+
+test("codex duplicate ids: updated_at beats line order", () => {
+  const r = run({
+    codexIndex: [
+      { id: "cdx-1", thread_name: "new-name", updated_at: "2026-08-08T22:00:00Z" },
+      { id: "cdx-1", thread_name: "old-name", updated_at: "2026-08-08T21:00:00Z" },
+    ],
+    world: {
+      agents: [agent("cdx-1", "w1:p1", "w1:t1", "w1", "codex")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "new-name"]], r.stderr);
+});
+
+test("codex tombstone entry clears a stale name", () => {
   const r = run({
     codexIndex: [
       { id: "cdx-1", thread_name: "old-name", updated_at: "2026-08-08T21:00:00Z" },
@@ -309,30 +335,10 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
       panes: rootPane("w1", "/Users/ryan/dev/notes"),
     },
   });
-  check("codex tombstone entry clears a stale name", r.calls.length === 0,
-    JSON.stringify(r.calls) + r.stderr);
-}
+  assert.deepEqual(r.calls, [], r.stderr);
+});
 
-// Codex: duplicate ids resolve by updated_at, not line order
-{
-  const r = run({
-    codexIndex: [
-      { id: "cdx-1", thread_name: "new-name", updated_at: "2026-08-08T22:00:00Z" },
-      { id: "cdx-1", thread_name: "old-name", updated_at: "2026-08-08T21:00:00Z" },
-    ],
-    world: {
-      agents: [agent("cdx-1", "w1:p1", "w1:t1", "w1", "codex")],
-      workspaces: [ws("w1", "notes")],
-      panes: rootPane("w1", "/Users/ryan/dev/notes"),
-    },
-  });
-  check("codex duplicate ids: newest updated_at wins over line order",
-    r.calls.length === 1 && r.calls[0][1] === "new-name",
-    JSON.stringify(r.calls) + r.stderr);
-}
-
-// Codex: one corrupt line doesn't poison the rest of the index
-{
+test("codex corrupt index line skipped, valid lines still apply", () => {
   const r = run({
     codexIndex: [
       '{"id":"cdx-1","thread_na GARBAGE',
@@ -344,64 +350,10 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
       panes: rootPane("w1", "/Users/ryan/dev/notes"),
     },
   });
-  check("codex corrupt index line skipped, valid lines still apply",
-    r.calls.length === 1 && r.calls[0][1] === "good-name",
-    JSON.stringify(r.calls) + r.stderr);
-}
+  assert.deepEqual(r.calls, [["w1", "good-name"]], r.stderr);
+});
 
-// Codex: named thread (present in session_index.jsonl) → rename
-{
-  const r = run({
-    codexIndex: [
-      { id: "cdx-1", thread_name: "codex-task-name", updated_at: "2026-08-08T21:40:59Z" },
-    ],
-    world: {
-      agents: [agent("cdx-1", "w1:p1", "w1:t1", "w1", "codex")],
-      workspaces: [ws("w1", "notes")],
-      panes: rootPane("w1", "/Users/ryan/dev/notes"),
-    },
-  });
-  check("codex named thread renames default-labelled workspace",
-    r.calls.length === 1 && r.calls[0][1] === "codex-task-name",
-    JSON.stringify(r.calls) + r.stderr);
-}
-
-// Codex: session absent from the index (unnamed/auto) → no opinion, no-op
-{
-  const r = run({
-    codexIndex: [
-      { id: "other", thread_name: "someone-else", updated_at: "2026-08-08T21:40:59Z" },
-    ],
-    world: {
-      agents: [agent("cdx-unnamed", "w1:p1", "w1:t1", "w1", "codex")],
-      workspaces: [ws("w1", "notes")],
-      panes: rootPane("w1", "/Users/ryan/dev/notes"),
-    },
-  });
-  check("codex unnamed session never renames", r.calls.length === 0,
-    JSON.stringify(r.calls) + r.stderr);
-}
-
-// Codex: duplicate ids — the newest entry wins (re-rename)
-{
-  const r = run({
-    codexIndex: [
-      { id: "cdx-1", thread_name: "old-name", updated_at: "2026-08-08T21:00:00Z" },
-      { id: "cdx-1", thread_name: "new-name", updated_at: "2026-08-08T22:00:00Z" },
-    ],
-    world: {
-      agents: [agent("cdx-1", "w1:p1", "w1:t1", "w1", "codex")],
-      workspaces: [ws("w1", "notes")],
-      panes: rootPane("w1", "/Users/ryan/dev/notes"),
-    },
-  });
-  check("codex duplicate index lines: latest wins",
-    r.calls.length === 1 && r.calls[0][1] === "new-name",
-    JSON.stringify(r.calls) + r.stderr);
-}
-
-// Mixed providers in one sweep: claude ws and codex ws both rename
-{
+test("mixed sweep: claude and codex workspaces both sync", () => {
   const r = run({
     sessions: [{ pid: 1, sessionId: "cl-1", name: "claude-name" }],
     codexIndex: [
@@ -416,39 +368,38 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
       panes: { ...rootPane("w1", "/Users/ryan/dev/notes"), ...rootPane("w2", "/Users/ryan/dev/notes") },
     },
   });
-  const byWs = Object.fromEntries(r.calls.map((c) => [c[0], c[1]]));
-  check("mixed sweep: claude and codex workspaces both sync",
-    r.calls.length === 2 && byWs.w1 === "claude-name" && byWs.w2 === "codex-name",
-    JSON.stringify(r.calls) + r.stderr);
-}
+  assert.deepEqual(Object.fromEntries(r.calls), { w1: "claude-name", w2: "codex-name" }, r.stderr);
+});
 
-// Concurrency: a fresh lock (another sweep in flight) → skip entirely
-{
-  const world = {
+const lockScenario = {
+  sessions: [{ pid: 1, sessionId: "s1", name: "wants-this" }],
+  world: {
     agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
     workspaces: [ws("w1", "notes")],
     panes: rootPane("w1", "/Users/ryan/dev/notes"),
-  };
-  const sessions = [{ pid: 1, sessionId: "s1", name: "wants-this" }];
-  const fresh = run({ sessions, world, lockAgeMs: 0 });
-  check("fresh lock held → sweep skipped, lock preserved",
-    fresh.calls.length === 0 && fresh.lockLeft && fresh.status === 0,
-    `calls=${JSON.stringify(fresh.calls)} lockLeft=${fresh.lockLeft}`);
+  },
+};
 
-  // …but a stale lock (crashed sweep) is stolen and the sweep proceeds
-  const stale = run({ sessions, world, lockAgeMs: 60_000 });
-  check("stale lock stolen → sweep proceeds, lock released",
-    stale.calls.length === 1 && stale.calls[0][1] === "wants-this" && !stale.lockLeft,
-    `calls=${JSON.stringify(stale.calls)} lockLeft=${stale.lockLeft}${stale.stderr}`);
+test("fresh lock held by another sweep: skipped, lock preserved", () => {
+  const r = run({ ...lockScenario, lockAgeMs: 0 });
+  assert.deepEqual(r.calls, []);
+  assert.ok(r.lockLeft, "foreign lock must not be removed");
+  assert.equal(r.status, 0);
+});
 
-  // …and a normal run leaves no lock behind
-  const normal = run({ sessions, world });
-  check("normal run releases the lock", normal.calls.length === 1 && !normal.lockLeft,
-    `calls=${JSON.stringify(normal.calls)} lockLeft=${normal.lockLeft}`);
-}
+test("stale lock stolen: sweep proceeds, lock released", () => {
+  const r = run({ ...lockScenario, lockAgeMs: 60_000 });
+  assert.deepEqual(r.calls, [["w1", "wants-this"]], r.stderr);
+  assert.ok(!r.lockLeft);
+});
 
-// Stale: session id not in registry → skip whole workspace
-{
+test("normal run releases the lock", () => {
+  const r = run(lockScenario);
+  assert.deepEqual(r.calls, [["w1", "wants-this"]], r.stderr);
+  assert.ok(!r.lockLeft);
+});
+
+test("session id missing from registry: workspace skipped", () => {
   const r = run({
     sessions: [{ pid: 1, sessionId: "someone-else", name: "irrelevant" }],
     world: {
@@ -457,11 +408,10 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
       panes: rootPane("w1", "/Users/ryan/dev/notes"),
     },
   });
-  check("join drops sessions missing from registry", r.calls.length === 0, JSON.stringify(r.calls));
-}
+  assert.deepEqual(r.calls, []);
+});
 
-// Fail-safe: root pane get fails → skip, exit 0
-{
+test("missing root pane: safe skip, exit 0", () => {
   const r = run({
     sessions: [{ pid: 1, sessionId: "s1", name: "wants-this" }],
     world: {
@@ -470,12 +420,11 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
       panes: {}, // no p1 → pane get exits 1
     },
   });
-  check("missing root pane → safe skip, exit 0",
-    r.calls.length === 0 && r.status === 0, `status=${r.status} ${JSON.stringify(r.calls)}`);
-}
+  assert.deepEqual(r.calls, []);
+  assert.equal(r.status, 0);
+});
 
-// Multi-workspace sweep: only the eligible one is renamed
-{
+test("global sweep renames only eligible workspaces", () => {
   const r = run({
     sessions: [
       { pid: 1, sessionId: "s1", name: "eligible-name" },
@@ -490,13 +439,10 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
       panes: { ...rootPane("w1", "/Users/ryan/dev/notes"), ...rootPane("w2", "/Users/ryan/dev/notes") },
     },
   });
-  check("global sweep renames only eligible workspaces",
-    r.calls.length === 1 && r.calls[0][0] === "w1",
-    JSON.stringify(r.calls) + r.stderr);
-}
+  assert.deepEqual(r.calls, [["w1", "eligible-name"]], r.stderr);
+});
 
-// A rename also reports the workspace dir as a $dir sidebar token, ~-shortened
-{
+test("rename reports ~-shortened dir metadata", () => {
   const r = run({
     sessions: [{ pid: 1, sessionId: "s1", name: "my-cool-task" }],
     world: {
@@ -505,15 +451,13 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
       panes: rootPane("w1", "$HOME/dev/notes"),
     },
   });
-  check("rename reports ~-shortened dir metadata",
-    r.calls.length === 1 &&
-      r.meta.length === 1 &&
-      r.meta[0].join(" ") === "w1 --source io.rlew.workspace-renamer --token dir=~/dev/notes",
-    JSON.stringify(r.meta) + r.stderr);
-}
+  assert.deepEqual(r.calls, [["w1", "my-cool-task"]], r.stderr);
+  assert.deepEqual(r.meta, [
+    ["w1", "--source", "io.rlew.workspace-renamer", "--token", "dir=~/dev/notes"],
+  ]);
+});
 
-// An owned, already-in-sync workspace refreshes the dir token without renaming
-{
+test("in-sync owned workspace refreshes dir metadata without renaming", () => {
   const r = run({
     sessions: [{ pid: 1, sessionId: "s1", name: "our-name" }],
     world: {
@@ -523,13 +467,13 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
     },
     state: { w1: "our-name" },
   });
-  check("in-sync owned workspace refreshes dir metadata, no rename",
-    r.calls.length === 0 && r.meta.length === 1 && r.meta[0].includes("dir=~/dev/notes"),
-    JSON.stringify({ calls: r.calls, meta: r.meta }) + r.stderr);
-}
+  assert.deepEqual(r.calls, []);
+  assert.deepEqual(r.meta, [
+    ["w1", "--source", "io.rlew.workspace-renamer", "--token", "dir=~/dev/notes"],
+  ]);
+});
 
-// A user override clears the dir token along with the state entry
-{
+test("user override clears dir metadata", () => {
   const r = run({
     sessions: [{ pid: 1, sessionId: "s1", name: "plugin-wants-this" }],
     world: {
@@ -539,15 +483,13 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
     },
     state: { w1: "old-plugin-name" },
   });
-  check("user override clears dir metadata",
-    r.calls.length === 0 &&
-      r.meta.length === 1 &&
-      r.meta[0].join(" ") === "w1 --source io.rlew.workspace-renamer --clear-token dir",
-    JSON.stringify(r.meta) + r.stderr);
-}
+  assert.deepEqual(r.calls, []);
+  assert.deepEqual(r.meta, [
+    ["w1", "--source", "io.rlew.workspace-renamer", "--clear-token", "dir"],
+  ]);
+});
 
-// Workspaces the plugin never renamed get no metadata at all
-{
+test("untouched workspace gets no dir metadata", () => {
   const r = run({
     sessions: [{ pid: 1, sessionId: "s1", name: "notes-27", nameSource: "derived" }],
     world: {
@@ -556,9 +498,5 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
       panes: rootPane("w1", "$HOME/dev/notes"),
     },
   });
-  check("untouched workspace gets no dir metadata", r.meta.length === 0,
-    JSON.stringify(r.meta) + r.stderr);
-}
-
-console.log(failures ? `\n${failures} failure(s)` : "\nall tests passed");
-process.exit(failures ? 1 : 0);
+  assert.deepEqual(r.meta, []);
+});
