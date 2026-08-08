@@ -87,18 +87,30 @@ collapses the empty line — they render exactly as before.
 ## Install
 
 ```sh
-git clone https://github.com/ryanlewis/herdr-workspace-renamer
-cd herdr-workspace-renamer
-herdr plugin link .
+herdr plugin install ryanlewis/herdr-workspace-renamer
 ```
 
 Requires herdr ≥ 0.8.0 and Node ≥ 18. Zero npm dependencies.
+
+To remove it:
+
+```sh
+herdr plugin uninstall io.rlew.workspace-renamer
+```
 
 The plugin normally runs off herdr events, but you can force a sweep at any
 time with the bundled workspace action:
 
 ```sh
 herdr plugin action invoke io.rlew.workspace-renamer.sync-now
+```
+
+### Development
+
+```sh
+git clone https://github.com/ryanlewis/herdr-workspace-renamer
+cd herdr-workspace-renamer
+herdr plugin link .      # and later: herdr plugin unlink io.rlew.workspace-renamer
 ```
 
 Plugin state (a map of workspace id → last label the plugin wrote, used to
@@ -122,3 +134,7 @@ degrades to doing nothing rather than renaming wrongly. For Codex
 specifically: if a future version starts auto-titling threads into
 `session_index.jsonl`, auto names would start syncing — visible and
 reversible, and the provider would then need a real discriminator.
+
+## License
+
+MIT
