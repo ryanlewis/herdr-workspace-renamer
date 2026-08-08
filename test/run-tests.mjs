@@ -17,9 +17,9 @@ const check = (name, ok, detail = "") => {
   if (!ok) failures++;
 };
 
-const agent = (sessionId, paneId, tabId, wsId) => ({
-  agent: "claude",
-  agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value: sessionId },
+const agent = (sessionId, paneId, tabId, wsId, type = "claude") => ({
+  agent: type,
+  agent_session: { agent: type, kind: "id", source: `herdr:${type}`, value: sessionId },
   agent_status: "idle",
   pane_id: paneId,
   tab_id: tabId,
@@ -193,6 +193,24 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
   check("D9 clean(): collapsed, control-stripped, capped at 32",
     r.calls.length === 1 && got.startsWith("Fix the thing") && got.length <= 32 && !/[\x00-\x1f\x7f]/.test(got),
     JSON.stringify(got));
+}
+
+// Provider seam: primary agent of a type with no provider → whole workspace
+// skips, even when a user-named claude guest is present (type-blind FR5).
+{
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "guest", name: "guest-renamed" }],
+    world: {
+      agents: [
+        agent("codex-sess", "w1:p1", "w1:t1", "w1", "codex"),
+        agent("guest", "w1:p3", "w1:t1", "w1"),
+      ],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  check("unmatched primary agent type → workspace skipped", r.calls.length === 0,
+    JSON.stringify(r.calls) + r.stderr);
 }
 
 // D5/stale: session id not in registry → skip whole workspace

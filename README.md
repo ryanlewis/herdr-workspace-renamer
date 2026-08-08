@@ -33,6 +33,11 @@ registry against `herdr agent list` (session id ↔ pane ↔ workspace), then
 renames a workspace only when its current label is the default (basename of the
 root pane's cwd) or the plugin's own last write, tracked in plugin state.
 
+Name resolution is provider-based internally: each agent type owns a small
+adapter that maps a herdr agent record to the user's intended session name (or
+"no opinion"). Claude Code is the only provider today; adding another agent
+means writing one adapter, with no changes to the reconcile core.
+
 Fail-safe by design: any parse or shape surprise is a silent no-op with one
 line to stderr (visible via
 `herdr plugin log list --plugin io.rlew.workspace-renamer`). Doing nothing is

@@ -40,9 +40,21 @@ function herdr(...args) {
   return JSON.parse(r.stdout);
 }
 
+// ---- name providers ---------------------------------------------------
+// Each provider owns one agent type and answers a single question: "what
+// name does the user intend for this session?" The contract:
+//   matches(agent) — claims a herdr agent record by type.
+//   load()         — runs once per sweep; reads whatever registry the agent
+//                    keeps and returns a resolver (agent → name | null), or
+//                    null when there is no data at all this sweep.
+// A null name means "no opinion" and always collapses to the no-op path, so
+// adding a provider can never weaken the fail-safe posture. Everything else
+// (workspace join, primary selection, ownership guard, state) is agent-
+// agnostic and lives in main().
+
 // ~/.claude/sessions/<pid>.json — undocumented Claude Code internal (spec R1).
 // Validate per file; anything surprising is treated as "no session info".
-function readRegistry() {
+function readClaudeRegistry() {
   const bySessionId = new Map();
   let files;
   try {
@@ -62,6 +74,23 @@ function readRegistry() {
   }
   return bySessionId;
 }
+
+const claudeProvider = {
+  id: "claude",
+  matches: (agent) => agent?.agent === "claude",
+  load() {
+    const registry = readClaudeRegistry();
+    if (registry.size === 0) return null;
+    return (agent) => {
+      const sess = registry.get(agent.agent_session.value);
+      if (!sess) return null; // stale/foreign — drops out of the join
+      if (sess.nameSource === "derived") return null; // FR4: auto-names never rename
+      return sess.name;
+    };
+  },
+};
+
+const PROVIDERS = [claudeProvider];
 
 // Trim, collapse whitespace, strip control chars, cap length. No re-slugging —
 // the user typed what they want.
@@ -128,8 +157,16 @@ function debounced() {
 function main() {
   if (debounced()) return;
 
-  const registry = readRegistry();
-  if (registry.size === 0) return;
+  const active = [];
+  for (const provider of PROVIDERS) {
+    try {
+      const resolve = provider.load();
+      if (resolve) active.push({ provider, resolve });
+    } catch (e) {
+      warn(`provider ${provider.id} load failed: ${e.message}`);
+    }
+  }
+  if (active.length === 0) return; // no session data anywhere → nothing to sync
 
   const agents = herdr("agent", "list")?.result?.agents;
   const workspaces = herdr("workspace", "list")?.result?.workspaces;
@@ -167,10 +204,12 @@ function main() {
       .filter((a) => tabNum(a.tab_id) === minTab)
       .reduce((best, a) => (paneNum(a.pane_id) < paneNum(best.pane_id) ? a : best));
 
-    const sess = registry.get(primary.agent_session.value);
-    if (!sess) continue; // stale/foreign/non-claude — drops out of the join
-    if (sess.nameSource === "derived") continue; // FR4: auto-names never rename
-    const want = clean(sess.name);
+    // Type-blind by design: if the primary agent's type has no provider, the
+    // whole workspace skips — a guest session must never drive the label.
+    const entry = active.find(({ provider }) => provider.matches(primary));
+    const rawName = entry?.resolve(primary);
+    if (typeof rawName !== "string") continue;
+    const want = clean(rawName);
     if (!want) continue;
 
     // FR2 guard: only touch a label that is the default (root-pane cwd
