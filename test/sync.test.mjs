@@ -34,7 +34,7 @@ const ws = (id, label) => ({ workspace_id: id, label, number: 1, tab_count: 1, p
 const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd } });
 
 // One sandbox per scenario: fresh HOME, world file, calls/meta logs, state dir.
-function run({ sessions = [], codexIndex, world, state, lockAgeMs, noStateDir }) {
+function run({ sessions = [], codexIndex, world, state, lockAgeMs, noStateDir, stateUnwritable, args = [] }) {
   const dir = mkdtempSync(join(tmpdir(), "wsren-test-"));
   const home = join(dir, "home");
   mkdirSync(join(home, ".claude", "sessions"), { recursive: true });
@@ -61,6 +61,9 @@ function run({ sessions = [], codexIndex, world, state, lockAgeMs, noStateDir })
   const stateDir = join(dir, "state");
   mkdirSync(stateDir);
   if (state) writeFileSync(join(stateDir, "state.json"), JSON.stringify(state));
+  // A directory at state.json makes writeState's atomic rename fail while
+  // everything else (lock, stamp) still works.
+  if (stateUnwritable) mkdirSync(join(stateDir, "state.json"));
   if (lockAgeMs !== undefined) {
     const lock = join(stateDir, ".lock");
     writeFileSync(lock, "99999");
@@ -78,7 +81,7 @@ function run({ sessions = [], codexIndex, world, state, lockAgeMs, noStateDir })
     FAKE_HERDR_META: metaPath,
   };
   if (noStateDir) delete env.HERDR_PLUGIN_STATE_DIR;
-  const r = spawnSync(process.execPath, [syncScript], { encoding: "utf8", env });
+  const r = spawnSync(process.execPath, [syncScript, ...args], { encoding: "utf8", env });
 
   const calls = readFileSync(callsPath, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
   const meta = readFileSync(metaPath, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
@@ -498,6 +501,61 @@ test("clean(): cap counts code points, never splits a surrogate pair", () => {
     },
   });
   assert.deepEqual(r.calls, [["w1", "🚀".repeat(32)]], r.stderr);
+});
+
+test("state write failure aborts all renames (no rename without recorded ownership)", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "wants-this" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+    stateUnwritable: true,
+  });
+  assert.deepEqual(r.calls, []);
+  assert.equal(r.status, 0);
+  assert.match(r.stderr, /state write failed/);
+});
+
+test("mid-sweep manual rename wins (pre-rename live re-check)", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "wants-this" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+      live_labels: { w1: "user-just-renamed" },
+    },
+  });
+  assert.deepEqual(r.calls, [], r.stderr);
+});
+
+test("clean(): control char flanked by spaces collapses to a single space", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "fix \x07 thing" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "fix thing"]], r.stderr);
+});
+
+test("--dry-run reads existing state, so owned workspaces preview their update", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "second-name" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "first-name")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+    state: { w1: "first-name" },
+    args: ["--dry-run"],
+  });
+  assert.deepEqual(r.calls, []);
+  assert.match(r.stderr, /would rename w1 "first-name" -> "second-name"/);
 });
 
 test("no state dir and no --dry-run: refuses to run, renames nothing", () => {

@@ -128,6 +128,10 @@ node test/sync.test.mjs   # offline: fake herdr CLI + fake session registries
 node sync.mjs --dry-run   # against live herdr state, prints planned renames
 ```
 
+`--dry-run` outside herdr reads the real plugin state directory (if present),
+so the preview matches what event-driven runs would actually do — including
+updates to workspaces the plugin already owns.
+
 Tests use the built-in `node:test` runner — Node ≥ 20 for development. (The
 test file is run directly rather than via `node --test`: glob arguments need
 Node ≥ 21, and this repo's `test/` directory name collides with the runner's

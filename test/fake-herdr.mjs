@@ -28,6 +28,21 @@ if (group === "agent" && verb === "list") {
   process.stdout.write(
     JSON.stringify({ id: "cli:pane:get", result: { pane, type: "pane_info" } }),
   );
+} else if (group === "workspace" && verb === "get") {
+  const w = (world.workspaces || []).find((x) => x.workspace_id === rest[0]);
+  if (!w) {
+    process.stderr.write("workspace not found\n");
+    process.exit(1);
+  }
+  // live_labels lets a test simulate a label changing between the sweep's
+  // `workspace list` snapshot and its pre-rename `workspace get` re-check.
+  const label = world.live_labels?.[rest[0]] ?? w.label;
+  process.stdout.write(
+    JSON.stringify({
+      id: "cli:workspace:get",
+      result: { type: "workspace_info", workspace: { ...w, label } },
+    }),
+  );
 } else if (group === "workspace" && verb === "rename") {
   appendFileSync(process.env.FAKE_HERDR_CALLS, JSON.stringify(rest) + "\n");
   process.stdout.write(JSON.stringify({ id: "cli:workspace:rename", result: { ok: true } }));
