@@ -27,13 +27,20 @@ const agent = (sessionId, paneId, tabId, wsId, type = "claude") => ({
 });
 
 // One sandbox per scenario: fresh HOME, world file, calls log, state dir.
-function run({ sessions, world, state }) {
+function run({ sessions = [], codexIndex, world, state }) {
   const dir = mkdtempSync(join(tmpdir(), "wsren-test-"));
   const home = join(dir, "home");
   mkdirSync(join(home, ".claude", "sessions"), { recursive: true });
   sessions.forEach((s, i) =>
     writeFileSync(join(home, ".claude", "sessions", `${1000 + i}.json`), JSON.stringify(s)),
   );
+  if (codexIndex) {
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    writeFileSync(
+      join(home, ".codex", "session_index.jsonl"),
+      codexIndex.map((e) => JSON.stringify(e)).join("\n") + "\n",
+    );
+  }
   const worldPath = join(dir, "world.json");
   writeFileSync(worldPath, JSON.stringify(world));
   const callsPath = join(dir, "calls.log");
@@ -202,7 +209,7 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
     sessions: [{ pid: 1, sessionId: "guest", name: "guest-renamed" }],
     world: {
       agents: [
-        agent("codex-sess", "w1:p1", "w1:t1", "w1", "codex"),
+        agent("gemini-sess", "w1:p1", "w1:t1", "w1", "gemini"),
         agent("guest", "w1:p3", "w1:t1", "w1"),
       ],
       workspaces: [ws("w1", "notes")],
@@ -210,6 +217,96 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
     },
   });
   check("unmatched primary agent type → workspace skipped", r.calls.length === 0,
+    JSON.stringify(r.calls) + r.stderr);
+}
+
+// FR5 hardening: a primary pane herdr hasn't joined yet (no agent_session)
+// blocks the workspace — primacy never falls through to a guest.
+{
+  const noSession = agent("x", "w1:p1", "w1:t1", "w1", "codex");
+  delete noSession.agent_session;
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "guest", name: "guest-renamed" }],
+    world: {
+      agents: [noSession, agent("guest", "w1:p3", "w1:t1", "w1")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  check("unjoined primary blocks workspace (guest never drives)",
+    r.calls.length === 0, JSON.stringify(r.calls) + r.stderr);
+}
+
+// Codex: named thread (present in session_index.jsonl) → rename
+{
+  const r = run({
+    codexIndex: [
+      { id: "cdx-1", thread_name: "codex-task-name", updated_at: "2026-08-08T21:40:59Z" },
+    ],
+    world: {
+      agents: [agent("cdx-1", "w1:p1", "w1:t1", "w1", "codex")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  check("codex named thread renames default-labelled workspace",
+    r.calls.length === 1 && r.calls[0][1] === "codex-task-name",
+    JSON.stringify(r.calls) + r.stderr);
+}
+
+// Codex: session absent from the index (unnamed/auto) → no opinion, no-op
+{
+  const r = run({
+    codexIndex: [
+      { id: "other", thread_name: "someone-else", updated_at: "2026-08-08T21:40:59Z" },
+    ],
+    world: {
+      agents: [agent("cdx-unnamed", "w1:p1", "w1:t1", "w1", "codex")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  check("codex unnamed session never renames", r.calls.length === 0,
+    JSON.stringify(r.calls) + r.stderr);
+}
+
+// Codex: append-only index — the latest line for an id wins (re-rename)
+{
+  const r = run({
+    codexIndex: [
+      { id: "cdx-1", thread_name: "old-name", updated_at: "2026-08-08T21:00:00Z" },
+      { id: "cdx-1", thread_name: "new-name", updated_at: "2026-08-08T22:00:00Z" },
+    ],
+    world: {
+      agents: [agent("cdx-1", "w1:p1", "w1:t1", "w1", "codex")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  check("codex duplicate index lines: latest wins",
+    r.calls.length === 1 && r.calls[0][1] === "new-name",
+    JSON.stringify(r.calls) + r.stderr);
+}
+
+// Mixed providers in one sweep: claude ws and codex ws both rename
+{
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "cl-1", name: "claude-name" }],
+    codexIndex: [
+      { id: "cdx-1", thread_name: "codex-name", updated_at: "2026-08-08T21:40:59Z" },
+    ],
+    world: {
+      agents: [
+        agent("cl-1", "w1:p1", "w1:t1", "w1"),
+        agent("cdx-1", "w2:p1", "w2:t1", "w2", "codex"),
+      ],
+      workspaces: [ws("w1", "notes"), ws("w2", "notes")],
+      panes: { ...rootPane("w1", "/Users/ryan/dev/notes"), ...rootPane("w2", "/Users/ryan/dev/notes") },
+    },
+  });
+  const byWs = Object.fromEntries(r.calls.map((c) => [c[0], c[1]]));
+  check("mixed sweep: claude and codex workspaces both sync",
+    r.calls.length === 2 && byWs.w1 === "claude-name" && byWs.w2 === "codex-name",
     JSON.stringify(r.calls) + r.stderr);
 }
 

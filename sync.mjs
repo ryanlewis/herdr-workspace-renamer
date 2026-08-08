@@ -90,7 +90,43 @@ const claudeProvider = {
   },
 };
 
-const PROVIDERS = [claudeProvider];
+// ~/.codex/session_index.jsonl — one line per *named* codex thread
+// ({id, thread_name, updated_at}); auto/unnamed sessions never appear, so
+// index presence doubles as the "explicitly named" discriminator (codex has
+// no nameSource equivalent). Append-only: later lines win on duplicate ids.
+// Join key is the same agent_session.value herdr reports for claude panes —
+// codex panes get theirs from herdr's codex SessionStart hook integration.
+const codexProvider = {
+  id: "codex",
+  matches: (agent) => agent?.agent === "codex",
+  load() {
+    let raw;
+    try {
+      raw = readFileSync(
+        join(homedir(), ".codex", "session_index.jsonl"),
+        "utf8",
+      );
+    } catch {
+      return null; // no index → no named threads → no opinion
+    }
+    const nameById = new Map();
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const j = JSON.parse(line);
+        if (typeof j?.id === "string" && typeof j?.thread_name === "string") {
+          nameById.set(j.id, j.thread_name);
+        }
+      } catch {
+        // unparseable line (mid-append) — skip silently
+      }
+    }
+    if (nameById.size === 0) return null;
+    return (agent) => nameById.get(agent.agent_session.value) ?? null;
+  },
+};
+
+const PROVIDERS = [claudeProvider, codexProvider];
 
 // Trim, collapse whitespace, strip control chars, cap length. No re-slugging —
 // the user typed what they want.
@@ -192,17 +228,18 @@ function main() {
     const label = ws?.label;
     if (typeof wsId !== "string" || typeof label !== "string") continue;
 
-    const wsAgents = agents.filter(
-      (a) => a?.workspace_id === wsId && a?.agent_session?.value,
-    );
+    const wsAgents = agents.filter((a) => a?.workspace_id === wsId);
     if (wsAgents.length === 0) continue;
 
     // FR5: primary = lowest-numbered agent pane of the first tab. Secondary
-    // sessions never drive the label.
+    // sessions never drive the label — so an unjoinable primary (no
+    // agent_session reported yet) blocks the workspace rather than passing
+    // primacy to a guest pane.
     const minTab = Math.min(...wsAgents.map((a) => tabNum(a.tab_id)));
     const primary = wsAgents
       .filter((a) => tabNum(a.tab_id) === minTab)
       .reduce((best, a) => (paneNum(a.pane_id) < paneNum(best.pane_id) ? a : best));
+    if (typeof primary?.agent_session?.value !== "string") continue;
 
     // Type-blind by design: if the primary agent's type has no provider, the
     // whole workspace skips — a guest session must never drive the label.

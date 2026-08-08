@@ -1,9 +1,10 @@
 # herdr Workspace Renamer
 
-A [herdr](https://herdr.dev) plugin that syncs Claude Code session names onto
-herdr workspace labels. When you `/rename` a session, the containing workspace
-label follows — unless the workspace already has a non-default name, in which
-case it is never touched. Manual names win, permanently.
+A [herdr](https://herdr.dev) plugin that syncs agent session names onto herdr
+workspace labels. When you name your session — `/rename` in Claude Code, or
+naming a thread in Codex — the containing workspace label follows, unless the
+workspace already has a non-default name, in which case it is never touched.
+Manual names win, permanently.
 
 ## Why
 
@@ -27,16 +28,24 @@ follow it.
 
 ## How it works
 
-Claude Code keeps a per-process session registry (`~/.claude/sessions/<pid>.json`)
-with each session's current name. On each herdr event the plugin joins that
-registry against `herdr agent list` (session id ↔ pane ↔ workspace), then
-renames a workspace only when its current label is the default (basename of the
-root pane's cwd) or the plugin's own last write, tracked in plugin state.
+On each herdr event the plugin joins each agent's session registry against
+`herdr agent list` (session id ↔ pane ↔ workspace), then renames a workspace
+only when its current label is the default (basename of the root pane's cwd)
+or the plugin's own last write, tracked in plugin state.
 
-Name resolution is provider-based internally: each agent type owns a small
-adapter that maps a herdr agent record to the user's intended session name (or
-"no opinion"). Claude Code is the only provider today; adding another agent
-means writing one adapter, with no changes to the reconcile core.
+Name resolution is provider-based: each agent type owns a small adapter that
+maps a herdr agent record to the user's intended session name (or "no
+opinion"). Current providers:
+
+- **Claude Code** — reads `~/.claude/sessions/<pid>.json`; a session counts as
+  user-named unless `nameSource` is `"derived"`.
+- **Codex** — reads `~/.codex/session_index.jsonl`, which only contains
+  explicitly named threads, so index presence is the user-named signal. Codex
+  panes are joined via the session id that herdr's Codex SessionStart hook
+  integration reports; panes the hook hasn't reported are left alone.
+
+Adding another agent means writing one adapter, with no changes to the
+reconcile core.
 
 Fail-safe by design: any parse or shape surprise is a silent no-op with one
 line to stderr (visible via
@@ -75,6 +84,9 @@ node sync.mjs --dry-run   # against live herdr state, prints planned renames
 
 ## Caveats
 
-The Claude Code session registry is an undocumented internal (shape observed on
-2.1.226). If a future Claude Code release changes it, the plugin degrades to
-doing nothing rather than renaming wrongly.
+Both name sources are undocumented internals (shapes observed on Claude Code
+2.1.226 and Codex 0.145.0). If a future release changes either, the plugin
+degrades to doing nothing rather than renaming wrongly. For Codex
+specifically: if a future version starts auto-titling threads into
+`session_index.jsonl`, auto names would start syncing — visible and
+reversible, and the provider would then need a real discriminator.
