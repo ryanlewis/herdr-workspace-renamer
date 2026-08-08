@@ -48,6 +48,19 @@ herdr plugin link .
 
 Requires herdr ≥ 0.8.0 and Node ≥ 18. Zero npm dependencies.
 
+The plugin normally runs off herdr events, but you can force a sweep at any
+time with the bundled workspace action:
+
+```sh
+herdr plugin action invoke io.rlew.workspace-renamer.sync-now
+```
+
+Plugin state (a map of workspace id → last label the plugin wrote, used to
+tell its own renames apart from yours) lives in
+`~/.local/state/herdr/plugins/io.rlew.workspace-renamer/`. Deleting it is
+safe: workspaces the plugin last renamed will just be treated as user-named
+until they return to their default label.
+
 ## Test
 
 ```sh
