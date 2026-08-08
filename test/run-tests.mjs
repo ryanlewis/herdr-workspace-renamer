@@ -52,9 +52,13 @@ function run({ sessions = [], codexIndex, world, state, lockAgeMs }) {
     );
   }
   const worldPath = join(dir, "world.json");
-  writeFileSync(worldPath, JSON.stringify(world));
+  // "$HOME" in fixture paths becomes the sandbox home, so tests can exercise
+  // home-relative behaviour (e.g. ~-shortening) against the real HOME env.
+  writeFileSync(worldPath, JSON.stringify(world).replaceAll("$HOME", home));
   const callsPath = join(dir, "calls.log");
   writeFileSync(callsPath, "");
+  const metaPath = join(dir, "meta.log");
+  writeFileSync(metaPath, "");
   const stateDir = join(dir, "state");
   mkdirSync(stateDir);
   if (state) writeFileSync(join(stateDir, "state.json"), JSON.stringify(state));
@@ -74,17 +78,19 @@ function run({ sessions = [], codexIndex, world, state, lockAgeMs }) {
       HERDR_PLUGIN_STATE_DIR: stateDir,
       FAKE_HERDR_WORLD: worldPath,
       FAKE_HERDR_CALLS: callsPath,
+      FAKE_HERDR_META: metaPath,
     },
   });
 
   const calls = readFileSync(callsPath, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
+  const meta = readFileSync(metaPath, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
   let stateAfter = {};
   try {
     stateAfter = JSON.parse(readFileSync(join(stateDir, "state.json"), "utf8"));
   } catch {}
   const lockLeft = existsSync(join(stateDir, ".lock"));
   rmSync(dir, { recursive: true, force: true });
-  return { calls, stateAfter, lockLeft, stderr: r.stderr, status: r.status };
+  return { calls, meta, stateAfter, lockLeft, stderr: r.stderr, status: r.status };
 }
 
 const ws = (id, label) => ({ workspace_id: id, label, number: 1, tab_count: 1, pane_count: 1 });
@@ -487,6 +493,71 @@ const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd 
   check("global sweep renames only eligible workspaces",
     r.calls.length === 1 && r.calls[0][0] === "w1",
     JSON.stringify(r.calls) + r.stderr);
+}
+
+// A rename also reports the workspace dir as a $dir sidebar token, ~-shortened
+{
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "my-cool-task" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "$HOME/dev/notes"),
+    },
+  });
+  check("rename reports ~-shortened dir metadata",
+    r.calls.length === 1 &&
+      r.meta.length === 1 &&
+      r.meta[0].join(" ") === "--source io.rlew.workspace-renamer --token dir=~/dev/notes w1",
+    JSON.stringify(r.meta) + r.stderr);
+}
+
+// An owned, already-in-sync workspace refreshes the dir token without renaming
+{
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "our-name" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "our-name")],
+      panes: rootPane("w1", "$HOME/dev/notes"),
+    },
+    state: { w1: "our-name" },
+  });
+  check("in-sync owned workspace refreshes dir metadata, no rename",
+    r.calls.length === 0 && r.meta.length === 1 && r.meta[0].includes("dir=~/dev/notes"),
+    JSON.stringify({ calls: r.calls, meta: r.meta }) + r.stderr);
+}
+
+// A user override clears the dir token along with the state entry
+{
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "plugin-wants-this" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "user-chose-this")],
+      panes: rootPane("w1", "$HOME/dev/notes"),
+    },
+    state: { w1: "old-plugin-name" },
+  });
+  check("user override clears dir metadata",
+    r.calls.length === 0 &&
+      r.meta.length === 1 &&
+      r.meta[0].join(" ") === "--source io.rlew.workspace-renamer --clear-token dir w1",
+    JSON.stringify(r.meta) + r.stderr);
+}
+
+// Workspaces the plugin never renamed get no metadata at all
+{
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "notes-27", nameSource: "derived" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "$HOME/dev/notes"),
+    },
+  });
+  check("untouched workspace gets no dir metadata", r.meta.length === 0,
+    JSON.stringify(r.meta) + r.stderr);
 }
 
 console.log(failures ? `\n${failures} failure(s)` : "\nall tests passed");

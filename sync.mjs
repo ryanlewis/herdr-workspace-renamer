@@ -25,6 +25,8 @@ import { homedir } from "node:os";
 
 const DRY = process.argv.includes("--dry-run");
 const HERDR = process.env.HERDR_BIN_PATH || "herdr";
+const HOME = homedir();
+const METADATA_SOURCE = "io.rlew.workspace-renamer";
 const STATE_DIR = process.env.HERDR_PLUGIN_STATE_DIR || null;
 const REGISTRY_DIR = join(homedir(), ".claude", "sessions");
 const CODEX_INDEX = join(homedir(), ".codex", "session_index.jsonl");
@@ -43,6 +45,51 @@ function herdr(...args) {
     );
   }
   return JSON.parse(r.stdout);
+}
+
+// ---- sidebar dir metadata ---------------------------------------------
+// Once we rename a workspace, its label stops saying where you are. So for
+// workspaces whose label we own, report the root pane's directory as
+// display-only workspace metadata: a custom `$dir` sidebar token, rendered
+// only if the user's sidebar layout includes "$dir" (see README). Re-reported
+// every sweep so it heals after a herdr restart; cleared the moment the user
+// takes the label back.
+
+const tildify = (p) =>
+  p === HOME ? "~" : p.startsWith(HOME + "/") ? "~" + p.slice(HOME.length) : p;
+
+function reportDirToken(wsId, cwd) {
+  if (DRY) return;
+  try {
+    herdr(
+      "workspace",
+      "report-metadata",
+      "--source",
+      METADATA_SOURCE,
+      "--token",
+      `dir=${tildify(cwd)}`,
+      wsId,
+    );
+  } catch (e) {
+    warn(`report dir metadata for ${wsId} failed: ${e.message}`);
+  }
+}
+
+function clearDirToken(wsId) {
+  if (DRY) return;
+  try {
+    herdr(
+      "workspace",
+      "report-metadata",
+      "--source",
+      METADATA_SOURCE,
+      "--clear-token",
+      "dir",
+      wsId,
+    );
+  } catch (e) {
+    warn(`clear dir metadata for ${wsId} failed: ${e.message}`);
+  }
 }
 
 // ---- name providers ---------------------------------------------------
@@ -354,13 +401,20 @@ function main() {
 
     if (label !== basename(rootCwd) && label !== state[wsId]) {
       if (wsId in state) {
-        delete state[wsId]; // user overrode our write — locked from now on
+        // user overrode our write — locked from now on; retire our dir row too
+        delete state[wsId];
         stateDirty = true;
+        clearDirToken(wsId);
       }
       continue;
     }
 
-    if (want === label) continue; // already in sync; also breaks rename loops
+    if (want === label) {
+      // Already in sync — no rename (also breaks any rename feedback loop).
+      // If the label is ours, keep the sidebar dir token alive.
+      if (label === state[wsId]) reportDirToken(wsId, rootCwd);
+      continue;
+    }
 
     if (DRY) {
       warn(`[dry-run] would rename ${wsId} "${label}" -> "${want}"`);
@@ -371,6 +425,7 @@ function main() {
       state[wsId] = want;
       stateDirty = true;
       warn(`renamed ${wsId} "${label}" -> "${want}"`);
+      reportDirToken(wsId, rootCwd);
     } catch (e) {
       warn(`rename ${wsId} failed: ${e.message}`);
     }

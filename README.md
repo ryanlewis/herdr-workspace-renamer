@@ -52,6 +52,38 @@ line to stderr (visible via
 `herdr plugin log list --plugin io.rlew.workspace-renamer`). Doing nothing is
 always acceptable; a wrong rename is the only real failure.
 
+## Sidebar: directory under the workspace name
+
+Once a workspace is renamed after a session, its label no longer says where
+you are. For every workspace whose label it owns, the plugin also reports the
+root pane's directory (`~`-shortened) as display-only workspace metadata under
+the custom sidebar token `$dir` — refreshed on every sweep, cleared the moment
+you rename the workspace yourself.
+
+Rendering it is personal config: add `$dir` to the space rows in your herdr
+`config.toml` (see [UI and sidebar](https://herdr.dev/docs/configuration/#ui-and-sidebar)).
+With the git line kept from the default layout:
+
+```toml
+[ui.sidebar.spaces]
+rows = [
+  ["state_icon", "workspace"],
+  ["$dir"],
+  ["branch", "git_status"],
+]
+```
+
+which renders renamed workspaces as:
+
+```
+herdr-plugin-mgr
+~/dev/herdr-workspace-renamer
+main ✚2
+```
+
+Workspaces the plugin hasn't renamed report no `$dir` token, and herdr
+collapses the empty line — they render exactly as before.
+
 ## Install
 
 ```sh
