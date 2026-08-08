@@ -1,0 +1,21 @@
+id = "io.rlew.workspace-renamer"
+name = "Workspace Renamer"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+platforms = ["macos", "linux"]
+
+[[events]]
+on = "pane.agent_detected"         # session (re)appears — also covers --resume
+command = ["node", "sync.mjs"]
+[[events]]
+on = "pane.agent_status_changed"   # main heartbeat: fires on every turn boundary
+command = ["node", "sync.mjs"]
+[[events]]
+on = "pane.focused"                # catches "renamed then switched away" sooner
+command = ["node", "sync.mjs"]
+
+[[actions]]
+id = "sync-now"
+title = "Sync workspace names now"
+contexts = ["workspace"]
+command = ["node", "sync.mjs"]
