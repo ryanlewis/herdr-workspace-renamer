@@ -117,16 +117,21 @@ Plugin state (a map of workspace id → last label the plugin wrote, used to
 tell its own renames apart from yours) lives in
 `~/.local/state/herdr/plugins/io.rlew.workspace-renamer/`. Deleting it is
 safe: workspaces the plugin last renamed will just be treated as user-named
-until they return to their default label.
+until they return to their default label. Their `$dir` sidebar token also
+stops being refreshed or cleared; if one lingers, remove it with
+`herdr workspace report-metadata <ws> --source io.rlew.workspace-renamer --clear-token dir`.
 
 ## Test
 
 ```sh
-node --test "test/*.test.mjs"   # offline: fake herdr CLI + fake session registries
-node sync.mjs --dry-run         # against live herdr state, prints planned renames
+node test/sync.test.mjs   # offline: fake herdr CLI + fake session registries
+node sync.mjs --dry-run   # against live herdr state, prints planned renames
 ```
 
-Tests use the built-in `node:test` runner — Node ≥ 20 for development.
+Tests use the built-in `node:test` runner — Node ≥ 20 for development. (The
+test file is run directly rather than via `node --test`: glob arguments need
+Node ≥ 21, and this repo's `test/` directory name collides with the runner's
+default discovery patterns.)
 
 ## Caveats
 

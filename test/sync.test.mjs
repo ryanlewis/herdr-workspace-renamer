@@ -34,7 +34,7 @@ const ws = (id, label) => ({ workspace_id: id, label, number: 1, tab_count: 1, p
 const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd } });
 
 // One sandbox per scenario: fresh HOME, world file, calls/meta logs, state dir.
-function run({ sessions = [], codexIndex, world, state, lockAgeMs }) {
+function run({ sessions = [], codexIndex, world, state, lockAgeMs, noStateDir }) {
   const dir = mkdtempSync(join(tmpdir(), "wsren-test-"));
   const home = join(dir, "home");
   mkdirSync(join(home, ".claude", "sessions"), { recursive: true });
@@ -68,18 +68,17 @@ function run({ sessions = [], codexIndex, world, state, lockAgeMs }) {
     utimesSync(lock, t, t);
   }
 
-  const r = spawnSync(process.execPath, [syncScript], {
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      HOME: home,
-      HERDR_BIN_PATH: fakeHerdr,
-      HERDR_PLUGIN_STATE_DIR: stateDir,
-      FAKE_HERDR_WORLD: worldPath,
-      FAKE_HERDR_CALLS: callsPath,
-      FAKE_HERDR_META: metaPath,
-    },
-  });
+  const env = {
+    ...process.env,
+    HOME: home,
+    HERDR_BIN_PATH: fakeHerdr,
+    HERDR_PLUGIN_STATE_DIR: stateDir,
+    FAKE_HERDR_WORLD: worldPath,
+    FAKE_HERDR_CALLS: callsPath,
+    FAKE_HERDR_META: metaPath,
+  };
+  if (noStateDir) delete env.HERDR_PLUGIN_STATE_DIR;
+  const r = spawnSync(process.execPath, [syncScript], { encoding: "utf8", env });
 
   const calls = readFileSync(callsPath, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
   const meta = readFileSync(metaPath, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
@@ -487,6 +486,33 @@ test("user override clears dir metadata", () => {
   assert.deepEqual(r.meta, [
     ["w1", "--source", "io.rlew.workspace-renamer", "--clear-token", "dir"],
   ]);
+});
+
+test("clean(): cap counts code points, never splits a surrogate pair", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "🚀".repeat(40) }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "🚀".repeat(32)]], r.stderr);
+});
+
+test("no state dir and no --dry-run: refuses to run, renames nothing", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "wants-this" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+    noStateDir: true,
+  });
+  assert.deepEqual(r.calls, []);
+  assert.equal(r.status, 0);
+  assert.match(r.stderr, /refusing to rename/);
 });
 
 test("untouched workspace gets no dir metadata", () => {

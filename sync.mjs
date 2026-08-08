@@ -211,14 +211,14 @@ const codexProvider = {
 const PROVIDERS = [claudeProvider, codexProvider];
 
 // Trim, collapse whitespace, strip control chars, cap length. No re-slugging —
-// the user typed what they want.
+// the user typed what they want. The cap counts code points, not UTF-16
+// units, so it can't split an emoji's surrogate pair.
 function clean(name) {
-  return name
+  const scrubbed = name
     .replace(/\s+/g, " ") // before control-strip so \t and \n become spaces
     .replace(/[\x00-\x1f\x7f]/g, "")
-    .trim()
-    .slice(0, MAX_LABEL)
     .trim();
+  return [...scrubbed].slice(0, MAX_LABEL).join("").trim();
 }
 
 const paneNum = (id) => {
@@ -436,7 +436,14 @@ function main() {
   if (stateDirty) writeState(state);
 }
 
-if (acquireLock()) {
+// Outside herdr (no state dir) a real run would rename workspaces without
+// recording ownership, permanently orphaning them from future syncs — refuse
+// rather than half-work. --dry-run stays available for previewing.
+if (!STATE_DIR && !DRY) {
+  warn(
+    "HERDR_PLUGIN_STATE_DIR is not set (not running under herdr?); refusing to rename without state tracking — use --dry-run to preview",
+  );
+} else if (acquireLock()) {
   try {
     main();
   } catch (e) {
