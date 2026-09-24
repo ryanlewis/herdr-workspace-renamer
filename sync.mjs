@@ -66,18 +66,24 @@ function herdr(...args) {
   return r.stdout.trim() === "" ? null : JSON.parse(r.stdout);
 }
 
-// ---- sidebar dir metadata ---------------------------------------------
-// Once we rename a workspace, its label stops saying where you are. So for
-// workspaces whose label we own, report the root pane's directory as
-// display-only workspace metadata: a custom `$dir` sidebar token, rendered
-// only if the user's sidebar layout includes "$dir" (see README). Re-reported
-// every sweep so it heals after a herdr restart; cleared the moment the user
-// takes the label back.
+// ---- sidebar metadata --------------------------------------------------
+// Two custom sidebar tokens, reported as display-only workspace metadata and
+// rendered only if the user's sidebar layout includes them (see README):
+//
+// `$dir` — once we rename a workspace, its label stops saying where you are.
+// For workspaces whose label we own, report the root pane's directory.
+// Re-reported every sweep so it heals after a herdr restart; cleared the
+// moment the user takes the label back.
+//
+// `$session` — the reverse case: the user named the workspace themselves, so
+// the session name it would otherwise carry is shown under it instead.
+// Reported only when it differs from what herdr already shows, so a quiet
+// sweep costs no extra herdr calls.
 
 const tildify = (p) =>
   p === HOME ? "~" : p.startsWith(HOME + "/") ? "~" + p.slice(HOME.length) : p;
 
-function reportDirToken(wsId, cwd) {
+function reportToken(wsId, name, value) {
   if (DRY) return;
   try {
     // Workspace id first: herdr's parser rejects options-then-positional here.
@@ -88,14 +94,14 @@ function reportDirToken(wsId, cwd) {
       "--source",
       METADATA_SOURCE,
       "--token",
-      `dir=${tildify(cwd)}`,
+      `${name}=${value}`,
     );
   } catch (e) {
-    warn(`report dir metadata for ${wsId} failed: ${e.message}`);
+    warn(`report ${name} metadata for ${wsId} failed: ${e.message}`);
   }
 }
 
-function clearDirToken(wsId) {
+function clearToken(wsId, name) {
   if (DRY) return;
   try {
     herdr(
@@ -105,10 +111,24 @@ function clearDirToken(wsId) {
       "--source",
       METADATA_SOURCE,
       "--clear-token",
-      "dir",
+      name,
     );
   } catch (e) {
-    warn(`clear dir metadata for ${wsId} failed: ${e.message}`);
+    warn(`clear ${name} metadata for ${wsId} failed: ${e.message}`);
+  }
+}
+
+const reportDirToken = (wsId, cwd) => reportToken(wsId, "dir", tildify(cwd));
+const clearDirToken = (wsId) => clearToken(wsId, "dir");
+
+// `ws` is the workspace list record, whose `tokens` map is what herdr shows
+// now; `name` is the session name to show, or null to clear it.
+function syncSessionToken(ws, name) {
+  const shown = ws.tokens?.session;
+  if (name !== null) {
+    if (shown !== name) reportToken(ws.workspace_id, "session", name);
+  } else if (shown !== undefined) {
+    clearToken(ws.workspace_id, "session");
   }
 }
 
@@ -263,9 +283,7 @@ function readState() {
 }
 
 // Returns false when the state could not be persisted — callers must then
-// abandon any renames that depend on it. (This machinery is vendored by
-// design and mirrors github.com/ryanlewis/herdr-tab-renamer's rename.mjs —
-// when fixing a bug here, port it there, and vice versa.)
+// abandon any renames that depend on it.
 function writeState(state) {
   if (!STATE_DIR || DRY) return true;
   try {
@@ -444,7 +462,12 @@ function main() {
     const handBack = label === SENTINEL || wsId === RESET_ID;
     let want = sessionNameFor(wsId);
     if (want === SENTINEL) want = null; // never write the sentinel back
-    if (want === null && !handBack) continue;
+    // `$session` is shown only for a user-named workspace with a session name
+    // it isn't carrying (the guard branch below); every other path clears it.
+    if (want === null) {
+      syncSessionToken(ws, null);
+      if (!handBack) continue;
+    }
 
     let rootCwd;
     try {
@@ -456,6 +479,7 @@ function main() {
     if (typeof rootCwd !== "string" || rootCwd === "") continue;
 
     if (handBack) {
+      if (want !== null) syncSessionToken(ws, null);
       // Take the session name if there is one, else go back to the default.
       const target = want ?? basename(rootCwd);
       const own = want !== null;
@@ -481,9 +505,12 @@ function main() {
         stateDirty = true;
         clearDirToken(wsId);
       }
+      syncSessionToken(ws, label === want ? null : want); // no duplicate row
       continue;
     }
 
+    // From here the label is (or is about to be) the session name.
+    syncSessionToken(ws, null);
     if (want === label) {
       // Already in sync — no rename (also breaks any rename feedback loop).
       // If the label is ours, keep the sidebar dir token alive.
