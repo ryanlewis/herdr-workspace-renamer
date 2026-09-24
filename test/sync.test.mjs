@@ -727,3 +727,14 @@ test("reset blocked by a busy lock gives up with one stderr line", () => {
   assert.match(r.stderr, /reset of w1 skipped/);
   assert.equal(r.status, 0);
 });
+
+test("? label with root pane at / is left alone (no empty label)", () => {
+  const r = run({
+    world: {
+      agents: [],
+      workspaces: [ws("w1", "?")],
+      panes: rootPane("w1", "/"),
+    },
+  });
+  assert.deepEqual(r.calls, [], r.stderr);
+});
