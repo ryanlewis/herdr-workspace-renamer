@@ -497,6 +497,7 @@ test("user override clears dir metadata", () => {
   assert.deepEqual(r.calls, []);
   assert.deepEqual(r.meta, [
     ["w1", "--source", "io.rlew.workspace-renamer", "--clear-token", "dir"],
+    ["w1", "--source", "io.rlew.workspace-renamer", "--token", "session=plugin-wants-this"],
   ]);
 });
 
@@ -737,4 +738,127 @@ test("? label with root pane at / is left alone (no empty label)", () => {
     },
   });
   assert.deepEqual(r.calls, [], r.stderr);
+});
+
+// Workspace list record carrying herdr's current token map.
+const wsTok = (id, label, tokens) => ({ ...ws(id, label), tokens });
+const SESSION = (value) => ["w1", "--source", "io.rlew.workspace-renamer", "--token", `session=${value}`];
+const CLEAR_SESSION = ["w1", "--source", "io.rlew.workspace-renamer", "--clear-token", "session"];
+
+test("user-named workspace shows the session name as $session", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "session-name" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "user-chose-this")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, []);
+  assert.deepEqual(r.meta, [SESSION("session-name")], r.stderr);
+});
+
+test("$session already shown with the same value: no herdr call", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "session-name" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [wsTok("w1", "user-chose-this", { session: "session-name" })],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.meta, [], r.stderr);
+});
+
+test("$session follows a session rename", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "new-name" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [wsTok("w1", "user-chose-this", { session: "old-name" })],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.meta, [SESSION("new-name")], r.stderr);
+});
+
+test("$session cleared when the label equals the session name", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "session-name" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [wsTok("w1", "session-name", { session: "session-name" })],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, []);
+  assert.deepEqual(r.meta, [CLEAR_SESSION], r.stderr);
+});
+
+test("$session cleared when the session is no longer user-named", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "notes-27", nameSource: "derived" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [wsTok("w1", "user-chose-this", { session: "old-name" })],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.meta, [CLEAR_SESSION], r.stderr);
+});
+
+test("$session cleared when the session is gone", () => {
+  const r = run({
+    world: {
+      agents: [],
+      workspaces: [wsTok("w1", "user-chose-this", { session: "old-name" })],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.meta, [CLEAR_SESSION], r.stderr);
+});
+
+test("$session cleared when the plugin renames the workspace to the session", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "session-name" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [wsTok("w1", "notes", { session: "stale" })],
+      panes: rootPane("w1", "$HOME/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "session-name"]], r.stderr);
+  assert.deepEqual(r.meta, [
+    CLEAR_SESSION,
+    ["w1", "--source", "io.rlew.workspace-renamer", "--token", "dir=~/dev/notes"],
+  ]);
+});
+
+test("hand-back clears $session as the workspace takes the session name", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "session-name" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [wsTok("w1", "?", { session: "session-name" })],
+      panes: rootPane("w1", "$HOME/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "session-name"]], r.stderr);
+  assert.deepEqual(r.meta, [
+    CLEAR_SESSION,
+    ["w1", "--source", "io.rlew.workspace-renamer", "--token", "dir=~/dev/notes"],
+  ]);
+});
+
+test("--dry-run reports no $session metadata", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "session-name" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "user-chose-this")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+    args: ["--dry-run"],
+  });
+  assert.deepEqual(r.meta, []);
 });

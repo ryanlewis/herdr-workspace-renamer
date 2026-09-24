@@ -98,6 +98,37 @@ main ✚2
 Workspaces the plugin hasn't renamed report no `$dir` token, and herdr
 collapses the empty line — they render exactly as before.
 
+## Sidebar: session name under a workspace you named
+
+The reverse case: when you name a workspace yourself, the plugin leaves the
+label alone, so the session name it would have used is not shown anywhere. For
+those workspaces the plugin reports the primary agent's user-named session
+name as the custom sidebar token `$session`. It is cleared when it no longer
+applies: the label equals the session name, the session is gone, or the
+session has no user-set name. A workspace labelled after its session never
+shows it twice.
+
+Add `$session` next to `$dir`; each workspace shows at most one of them:
+
+```toml
+[ui.sidebar.spaces]
+rows = [
+  ["state_icon", "workspace"],
+  ["$dir"],
+  ["$session"],
+  ["branch", "git_status"],
+]
+```
+
+which renders a workspace you named `auth-spike` whose session is
+`fix-login-redirect` as:
+
+```
+auth-spike
+fix-login-redirect
+main ✚2
+```
+
 ## Install
 
 ```sh
