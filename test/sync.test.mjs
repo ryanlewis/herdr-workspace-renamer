@@ -34,7 +34,7 @@ const ws = (id, label) => ({ workspace_id: id, label, number: 1, tab_count: 1, p
 const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd } });
 
 // One sandbox per scenario: fresh HOME, world file, calls/meta logs, state dir.
-function run({ sessions = [], codexIndex, world, state, lockAgeMs, noStateDir, stateUnwritable, args = [] }) {
+function run({ sessions = [], codexIndex, world, state, lockAgeMs, sweepStampAheadMs, noStateDir, stateUnwritable, args = [], env: extraEnv = {} }) {
   const dir = mkdtempSync(join(tmpdir(), "wsren-test-"));
   const home = join(dir, "home");
   mkdirSync(join(home, ".claude", "sessions"), { recursive: true });
@@ -70,6 +70,14 @@ function run({ sessions = [], codexIndex, world, state, lockAgeMs, noStateDir, s
     const t = (Date.now() - lockAgeMs) / 1000;
     utimesSync(lock, t, t);
   }
+  // A .last-sweep stamped in the future looks like a sweep that started after
+  // this invocation arrived, i.e. one that already covered it.
+  if (sweepStampAheadMs !== undefined) {
+    const stamp = join(stateDir, ".last-sweep");
+    writeFileSync(stamp, "");
+    const t = (Date.now() + sweepStampAheadMs) / 1000;
+    utimesSync(stamp, t, t);
+  }
 
   const env = {
     ...process.env,
@@ -79,6 +87,7 @@ function run({ sessions = [], codexIndex, world, state, lockAgeMs, noStateDir, s
     FAKE_HERDR_WORLD: worldPath,
     FAKE_HERDR_CALLS: callsPath,
     FAKE_HERDR_META: metaPath,
+    ...extraEnv,
   };
   if (noStateDir) delete env.HERDR_PLUGIN_STATE_DIR;
   const r = spawnSync(process.execPath, [syncScript, ...args], { encoding: "utf8", env });
@@ -583,4 +592,138 @@ test("untouched workspace gets no dir metadata", () => {
     },
   });
   assert.deepEqual(r.meta, []);
+});
+
+test("? label hands back: takes the session name and ownership", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "session-name" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "?")],
+      panes: rootPane("w1", "$HOME/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "session-name"]], r.stderr);
+  assert.equal(r.stateAfter.w1, "session-name");
+  assert.deepEqual(r.meta, [
+    ["w1", "--source", "io.rlew.workspace-renamer", "--token", "dir=~/dev/notes"],
+  ]);
+});
+
+test("? label with no user-named session restores the default label", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "notes-27", nameSource: "derived" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "?")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+    state: { w1: "old-plugin-name" },
+  });
+  assert.deepEqual(r.calls, [["w1", "notes"]], r.stderr);
+  assert.ok(!("w1" in r.stateAfter), "default label needs no ownership record");
+  assert.deepEqual(r.meta, [
+    ["w1", "--source", "io.rlew.workspace-renamer", "--clear-token", "dir"],
+  ]);
+});
+
+test("? label in a workspace with no agent restores the default label", () => {
+  const r = run({
+    world: {
+      agents: [],
+      workspaces: [ws("w1", "?")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "notes"]], r.stderr);
+});
+
+test("session named ? is never written back as a label", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: " ? " }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "?")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "notes"]], r.stderr);
+});
+
+test("? label changed again mid-sweep: the newer manual name wins", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "session-name" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "?")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+      live_labels: { w1: "user-changed-mind" },
+    },
+  });
+  assert.deepEqual(r.calls, [], r.stderr);
+});
+
+const manualScenario = {
+  sessions: [{ pid: 1, sessionId: "s1", name: "session-name" }],
+  world: {
+    agents: [agent("s1", "w1:p1", "w1:t1", "w1"), agent("s2", "w2:p1", "w2:t1", "w2")],
+    workspaces: [ws("w1", "user-chose-this"), ws("w2", "also-manual")],
+    panes: { ...rootPane("w1", "$HOME/dev/notes"), ...rootPane("w2", "$HOME/dev/other") },
+  },
+};
+
+test("reset action hands back only the invoking workspace", () => {
+  const r = run({ ...manualScenario, args: ["--reset"], env: { HERDR_WORKSPACE_ID: "w1" } });
+  assert.deepEqual(r.calls, [["w1", "session-name"]], r.stderr);
+  assert.equal(r.stateAfter.w1, "session-name");
+  assert.ok(!("w2" in r.stateAfter));
+});
+
+test("reset action with no user-named session restores the default label", () => {
+  const r = run({
+    world: manualScenario.world,
+    args: ["--reset"],
+    env: { HERDR_WORKSPACE_ID: "w1" },
+  });
+  assert.deepEqual(r.calls, [["w1", "notes"]], r.stderr);
+});
+
+test("reset claims a label that already equals the session name", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "session-name" }],
+    world: {
+      agents: [agent("s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "session-name")],
+      panes: rootPane("w1", "$HOME/dev/notes"),
+    },
+    args: ["--reset"],
+    env: { HERDR_WORKSPACE_ID: "w1" },
+  });
+  assert.deepEqual(r.calls, [], r.stderr);
+  assert.equal(r.stateAfter.w1, "session-name");
+  assert.deepEqual(r.meta, [
+    ["w1", "--source", "io.rlew.workspace-renamer", "--token", "dir=~/dev/notes"],
+  ]);
+});
+
+test("event hooks carrying HERDR_WORKSPACE_ID never reset (flag required)", () => {
+  const r = run({ ...manualScenario, env: { HERDR_WORKSPACE_ID: "w1" } });
+  assert.deepEqual(r.calls, [], r.stderr);
+});
+
+test("reset runs even when a newer sweep already started", () => {
+  const r = run({
+    ...manualScenario,
+    sweepStampAheadMs: 60_000,
+    args: ["--reset"],
+    env: { HERDR_WORKSPACE_ID: "w1" },
+  });
+  assert.deepEqual(r.calls, [["w1", "session-name"]], r.stderr);
+});
+
+test("reset blocked by a busy lock gives up with one stderr line", () => {
+  const r = run({ ...manualScenario, lockAgeMs: 0, args: ["--reset"], env: { HERDR_WORKSPACE_ID: "w1" } });
+  assert.deepEqual(r.calls, []);
+  assert.match(r.stderr, /reset of w1 skipped/);
+  assert.equal(r.status, 0);
 });

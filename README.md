@@ -3,8 +3,8 @@
 A [herdr](https://herdr.dev) plugin that syncs agent session names onto herdr
 workspace labels. When you name your session — `/rename` in Claude Code and
 Codex alike — the containing workspace label follows, unless the workspace
-already has a non-default name, in which case it is never touched. Manual
-names win, permanently.
+already has a non-default name, in which case it is left alone until you hand
+it back.
 
 ## Why
 
@@ -19,12 +19,26 @@ follow it.
   workspace to match.
 - Renaming the session again updates a label the plugin itself set.
 - A workspace you named yourself — manually, via `worktree create --label`, or
-  any other way — is never touched, even if the session is renamed later.
+  any other way — is left alone, even if the session is renamed later, until
+  you hand it back (see below).
 - Auto-derived session names (`my-project-3f`) never rename anything.
 - In multi-agent workspaces only the primary agent (lowest-numbered agent pane
   of the first tab) drives the label; guest sessions are ignored.
 - Every trigger event reconciles *all* workspaces, so missed events self-heal
   on the next one.
+
+## Handing a workspace back
+
+To let the plugin name a workspace you named yourself, either:
+
+- rename the workspace to `?`, or
+- run the **Hand workspace back to Workspace Renamer** action from that
+  workspace (`herdr plugin action invoke io.rlew.workspace-renamer.reset`).
+
+Either way the plugin syncs the workspace straight away: it takes the session
+name if the primary agent has a user-named session, and otherwise goes back to
+its default label (the root pane's folder name), where later session renames
+will pick it up.
 
 ## How it works
 
@@ -117,17 +131,17 @@ Plugin state (a map of workspace id → last label the plugin wrote, used to
 tell its own renames apart from yours) lives in
 `~/.local/state/herdr/plugins/io.rlew.workspace-renamer/`. Deleting it is
 safe: workspaces the plugin last renamed will just be treated as user-named
-until they return to their default label. Their `$dir` sidebar token also
-stops being refreshed or cleared; if one lingers, remove it with
+until they return to their default label or are handed back. Their `$dir`
+sidebar token also stops being refreshed or cleared; if one lingers, remove it with
 `herdr workspace report-metadata <ws> --source io.rlew.workspace-renamer --clear-token dir`.
 
 ## Coexistence
 
-Pairs with [herdr-tab-renamer](https://github.com/ryanlewis/herdr-tab-renamer),
-which labels *tabs* after their live content (agent session titles, shell
-directories) while this plugin syncs agent session *names* onto *workspace*
-labels. The two own different labels (workspaces vs tabs) and never conflict;
-both are no-op-happy global reconciles, so sharing trigger events is cheap.
+Pairs with [herdr-auto-title](https://github.com/kryptamine/herdr-auto-title),
+which names *tabs* and *panes*, while this plugin names *workspaces*. Leave
+auto-title's `HERDR_AUTO_TITLE_WORKSPACES` option off (the default): when on,
+it also renames one-tab workspaces, and the two plugins would compete for
+those labels.
 
 ## Test
 
