@@ -3,7 +3,8 @@
 // Global idempotent reconcile: every invocation sweeps all workspaces (event
 // payload ignored), so a missed event self-heals on the next one. A workspace
 // whose label isn't the default (or our own last write) is never touched —
-// manual names win, permanently.
+// manual names win until the user hands the workspace back (`?` label or the
+// reset action).
 //
 // Fail-safe posture: any parse/shape surprise → skip + one line to stderr.
 // Doing nothing is always acceptable; a wrong rename is the only real failure.
@@ -25,6 +26,14 @@ import { join, basename } from "node:path";
 import { homedir } from "node:os";
 
 const DRY = process.argv.includes("--dry-run");
+// --reset is the "hand back" action: the invoking workspace is treated as
+// unclaimed for this sweep. Event hooks may carry HERDR_WORKSPACE_ID too, so
+// only the flag (set by the action's command line) turns this on.
+const RESET_ID = process.argv.includes("--reset")
+  ? process.env.HERDR_WORKSPACE_ID || null
+  : null;
+// Renaming a workspace to this label hands it back the same way.
+const SENTINEL = "?";
 const HERDR = process.env.HERDR_BIN_PATH || "herdr";
 const HOME = homedir();
 const METADATA_SOURCE = "io.rlew.workspace-renamer";
@@ -393,16 +402,12 @@ function main() {
     }
   }
 
-  const plan = [];
-  for (const ws of workspaces) {
-    const wsId = ws?.workspace_id;
-    const label = ws?.label;
-    if (typeof wsId !== "string" || typeof label !== "string") continue;
-    touchLock(); // each iteration can spend a herdr call on `pane get`
-
+  // The user-named session name of the workspace's primary agent, cleaned, or
+  // null when there isn't one.
+  const sessionNameFor = (wsId) => {
     const wsAgents = agents.filter((a) => a?.workspace_id === wsId);
     const joined = wsAgents.filter(hasSession);
-    if (joined.length === 0) continue;
+    if (joined.length === 0) return null;
 
     // Only the primary agent drives the label; guest sessions are ignored.
     // The primary tab is the lowest tab holding a joinable agent (a tab herdr
@@ -419,17 +424,28 @@ function main() {
         if (pa !== pb) return pa < pb ? a : best;
         return hasSession(best) || !hasSession(a) ? best : a;
       });
-    if (!hasSession(primary)) continue;
+    if (!hasSession(primary)) return null;
 
     const resolve = resolverFor(primary);
     const rawName = resolve ? resolve(primary) : null;
-    if (typeof rawName !== "string") continue;
-    const want = clean(rawName);
-    if (!want) continue;
+    if (typeof rawName !== "string") return null;
+    return clean(rawName) || null;
+  };
 
-    // Ownership guard: only touch a label that is the default (root-pane cwd
-    // basename) or our own last write. Anything else → the user named this
-    // workspace, and their choice is permanent.
+  const plan = [];
+  for (const ws of workspaces) {
+    const wsId = ws?.workspace_id;
+    const label = ws?.label;
+    if (typeof wsId !== "string" || typeof label !== "string") continue;
+    touchLock(); // each iteration can spend a herdr call on `pane get`
+
+    // Hand-back: a `?` label or the reset action makes this workspace
+    // unclaimed again, whatever its label says.
+    const handBack = label === SENTINEL || wsId === RESET_ID;
+    let want = sessionNameFor(wsId);
+    if (want === SENTINEL) want = null; // never write the sentinel back
+    if (want === null && !handBack) continue;
+
     let rootCwd;
     try {
       rootCwd = herdr("pane", "get", `${wsId}:p1`)?.result?.pane?.cwd;
@@ -439,6 +455,24 @@ function main() {
     }
     if (typeof rootCwd !== "string" || rootCwd === "") continue;
 
+    if (handBack) {
+      // Take the session name if there is one, else go back to the default.
+      const target = want ?? basename(rootCwd);
+      const own = want !== null;
+      if (!own && target === label && !(wsId in state)) continue;
+      if (DRY) {
+        if (target !== label) {
+          warn(`[dry-run] would rename ${wsId} "${label}" -> "${target}"`);
+        }
+        continue;
+      }
+      plan.push({ wsId, label, want: target, rootCwd, own });
+      continue;
+    }
+
+    // Ownership guard: only touch a label that is the default (root-pane cwd
+    // basename) or our own last write. Anything else → the user named this
+    // workspace, and their choice stands until they hand it back.
     if (label !== basename(rootCwd) && label !== state[wsId]) {
       if (wsId in state) {
         // user overrode our write — locked from now on; retire our dir row too
@@ -460,15 +494,19 @@ function main() {
       warn(`[dry-run] would rename ${wsId} "${label}" -> "${want}"`);
       continue;
     }
-    plan.push({ wsId, label, want, rootCwd });
+    plan.push({ wsId, label, want, rootCwd, own: true });
   }
 
   // Persist intent BEFORE renaming: if a rename landed but the state write
   // didn't, the next sweep would misread our own label as user-named and lock
   // the workspace out permanently. The reverse failure (intent recorded,
   // rename lost) is harmless — the label stays default-eligible and
-  // self-heals on the next sweep.
-  for (const p of plan) state[p.wsId] = p.want;
+  // self-heals on the next sweep. A hand-back to the default label needs no
+  // ownership record: the default is always eligible.
+  for (const p of plan) {
+    if (p.own) state[p.wsId] = p.want;
+    else delete state[p.wsId];
+  }
   if ((stateDirty || plan.length > 0) && !writeState(state)) return;
 
   for (const p of plan) {
@@ -478,9 +516,14 @@ function main() {
       // now, and a manual rename landing mid-sweep must win.
       const live = herdr("workspace", "get", p.wsId)?.result?.workspace?.label;
       if (live !== p.label) continue;
-      herdr("workspace", "rename", p.wsId, p.want);
-      warn(`renamed ${p.wsId} "${p.label}" -> "${p.want}"`);
-      reportDirToken(p.wsId, p.rootCwd);
+      // Our own rename fires workspace.renamed; the sweep it triggers finds
+      // the label in sync (or default with no session) and does nothing.
+      if (p.want !== p.label) {
+        herdr("workspace", "rename", p.wsId, p.want);
+        warn(`renamed ${p.wsId} "${p.label}" -> "${p.want}"`);
+      }
+      if (p.own) reportDirToken(p.wsId, p.rootCwd);
+      else clearDirToken(p.wsId);
     } catch (e) {
       warn(`rename ${p.wsId} failed: ${e.message}`);
     }
@@ -507,13 +550,19 @@ if (!STATE_DIR && !DRY) {
   // contention, wait briefly and re-check rather than fire-and-forget
   // skipping (which would leave a label stale until some unrelated future
   // event). Give up after RETRY_WINDOW_MS; herdr events are frequent enough
-  // that a later sweep self-heals a rare miss.
+  // that a later sweep self-heals a rare miss. A reset is different: only a
+  // sweep that carries it can cover it, so it never counts as covered and
+  // says so if it gives up.
+  if (process.argv.includes("--reset") && !RESET_ID) {
+    warn("reset: no invoking workspace (HERDR_WORKSPACE_ID unset); plain sweep only");
+  }
   const arrival = Date.now();
+  const covered = () => !RESET_ID && lastSweepStart() > arrival;
   for (;;) {
-    if (lastSweepStart() > arrival) break; // a newer sweep covered this event
+    if (covered()) break; // a newer sweep covered this event
     if (acquireLock()) {
       try {
-        if (lastSweepStart() <= arrival) {
+        if (!covered()) {
           stampSweepStart();
           main();
         }
@@ -524,7 +573,10 @@ if (!STATE_DIR && !DRY) {
       }
       break;
     }
-    if (Date.now() - arrival > RETRY_WINDOW_MS) break;
+    if (Date.now() - arrival > RETRY_WINDOW_MS) {
+      if (RESET_ID) warn(`reset of ${RESET_ID} skipped: another sweep held the lock`);
+      break;
+    }
     sleep(50);
   }
 }

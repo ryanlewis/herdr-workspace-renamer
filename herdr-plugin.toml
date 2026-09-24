@@ -14,9 +14,18 @@ command = ["node", "sync.mjs"]
 [[events]]
 on = "pane.focused"                # catches "renamed then switched away" sooner
 command = ["node", "sync.mjs"]
+[[events]]
+on = "workspace.renamed"           # a rename to "?" hands the workspace back
+command = ["node", "sync.mjs"]
 
 [[actions]]
 id = "sync-now"
 title = "Sync workspace names now"
 contexts = ["workspace"]
 command = ["node", "sync.mjs"]
+
+[[actions]]
+id = "reset"
+title = "Hand workspace back to Workspace Renamer"
+contexts = ["workspace"]
+command = ["node", "sync.mjs", "--reset"]
