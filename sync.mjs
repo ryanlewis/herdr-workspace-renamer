@@ -459,6 +459,7 @@ function main() {
       // Take the session name if there is one, else go back to the default.
       const target = want ?? basename(rootCwd);
       const own = want !== null;
+      if (!target) continue; // root pane at "/" has no basename to restore
       if (!own && target === label && !(wsId in state)) continue;
       if (DRY) {
         if (target !== label) {
