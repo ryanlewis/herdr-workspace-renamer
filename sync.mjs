@@ -16,8 +16,10 @@ import {
   mkdirSync,
   statSync,
   openSync,
+  writeSync,
   closeSync,
   renameSync,
+  linkSync,
   unlinkSync,
   utimesSync,
 } from "node:fs";
@@ -310,21 +312,50 @@ function writeState(state) {
 function acquireLock() {
   if (!STATE_DIR || DRY) return true; // nothing to serialize against
   const lock = join(STATE_DIR, ".lock");
+  // Exclusive create, then the pid. If the pid write fails, remove the file:
+  // an ownerless lock would block every sweep until it went stale.
+  const create = () => {
+    const fd = openSync(lock, "wx");
+    try {
+      writeSync(fd, String(process.pid));
+      closeSync(fd);
+    } catch (e) {
+      try {
+        closeSync(fd);
+      } catch {}
+      unlinkSync(lock);
+      throw e;
+    }
+  };
   try {
     mkdirSync(STATE_DIR, { recursive: true });
-    writeFileSync(lock, String(process.pid), { flag: "wx" });
+    create();
     return true;
   } catch {
     try {
-      if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) {
+      const stale = statSync(lock, { bigint: true });
+      if (Date.now() - Number(stale.mtimeMs) > LOCK_STALE_MS) {
         // Steal atomically: rename is exclusive, so exactly one of any
         // concurrent stealers evicts the stale lock (the losers throw
         // ENOENT), then the vacated slot is contended for with the same
         // exclusive create as above.
         const tomb = join(STATE_DIR, `.lock.stale-${process.pid}`);
         renameSync(lock, tomb);
+        // Another stealer may have evicted the stale lock and taken a fresh
+        // one between our stat and rename. If what we moved is not the stale
+        // lock, put it back and back off.
+        const moved = statSync(tomb, { bigint: true });
+        if (moved.dev !== stale.dev || moved.ino !== stale.ino) {
+          try {
+            linkSync(tomb, lock);
+          } catch {
+            // the slot was re-taken meanwhile — nothing to restore into
+          }
+          unlinkSync(tomb);
+          return false;
+        }
         unlinkSync(tomb);
-        writeFileSync(lock, String(process.pid), { flag: "wx" });
+        create();
         return true;
       }
     } catch {
