@@ -14,12 +14,13 @@ import {
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const syncScript = join(here, "..", "sync.mjs");
 const fakeHerdr = join(here, "fake-herdr.mjs");
+const fsFaults = join(here, "fs-faults.mjs");
 
 const agent = (sessionId, paneId, tabId, wsId, type = "claude") => ({
   agent: type,
@@ -34,7 +35,7 @@ const ws = (id, label) => ({ workspace_id: id, label, number: 1, tab_count: 1, p
 const rootPane = (wsId, cwd) => ({ [`${wsId}:p1`]: { pane_id: `${wsId}:p1`, cwd } });
 
 // One sandbox per scenario: fresh HOME, world file, calls/meta logs, state dir.
-function run({ sessions = [], codexIndex, world, state, lockAgeMs, sweepStampAheadMs, noStateDir, stateUnwritable, args = [], env: extraEnv = {} }) {
+function run({ sessions = [], codexIndex, world, state, lockAgeMs, sweepStampAheadMs, noStateDir, stateUnwritable, fsFault, args = [], env: extraEnv = {} }) {
   const dir = mkdtempSync(join(tmpdir(), "wsren-test-"));
   const home = join(dir, "home");
   mkdirSync(join(home, ".claude", "sessions"), { recursive: true });
@@ -90,7 +91,9 @@ function run({ sessions = [], codexIndex, world, state, lockAgeMs, sweepStampAhe
     ...extraEnv,
   };
   if (noStateDir) delete env.HERDR_PLUGIN_STATE_DIR;
-  const r = spawnSync(process.execPath, [syncScript, ...args], { encoding: "utf8", env });
+  const preload = fsFault ? ["--import", pathToFileURL(fsFaults).href] : [];
+  if (fsFault) env.FS_FAULT = fsFault;
+  const r = spawnSync(process.execPath, [...preload, syncScript, ...args], { encoding: "utf8", env });
 
   const calls = readFileSync(callsPath, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
   const meta = readFileSync(metaPath, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
@@ -99,8 +102,9 @@ function run({ sessions = [], codexIndex, world, state, lockAgeMs, sweepStampAhe
     stateAfter = JSON.parse(readFileSync(join(stateDir, "state.json"), "utf8"));
   } catch {}
   const lockLeft = existsSync(join(stateDir, ".lock"));
+  const lockOwner = lockLeft ? readFileSync(join(stateDir, ".lock"), "utf8") : undefined;
   rmSync(dir, { recursive: true, force: true });
-  return { calls, meta, stateAfter, lockLeft, stderr: r.stderr, status: r.status };
+  return { calls, meta, stateAfter, lockLeft, lockOwner, stderr: r.stderr, status: r.status };
 }
 
 test("user-named session renames default-labelled workspace", () => {
@@ -400,6 +404,18 @@ test("fresh lock held by another sweep: skipped, lock preserved", () => {
 
 test("stale lock stolen: sweep proceeds, lock released", () => {
   const r = run({ ...lockScenario, lockAgeMs: 60_000 });
+  assert.deepEqual(r.calls, [["w1", "wants-this"]], r.stderr);
+  assert.ok(!r.lockLeft);
+});
+
+test("stale lock re-taken by another stealer mid-takeover: backs off, fresh lock kept", () => {
+  const r = run({ ...lockScenario, lockAgeMs: 60_000, fsFault: "steal-race" });
+  assert.deepEqual(r.calls, [], r.stderr);
+  assert.equal(r.lockOwner, "88888", "the other stealer's fresh lock must be put back");
+});
+
+test("failed pid write leaves no ownerless lock: the retry sweeps", () => {
+  const r = run({ ...lockScenario, fsFault: "pid-write" });
   assert.deepEqual(r.calls, [["w1", "wants-this"]], r.stderr);
   assert.ok(!r.lockLeft);
 });
