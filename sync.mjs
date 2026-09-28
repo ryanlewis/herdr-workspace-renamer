@@ -335,21 +335,31 @@ function acquireLock() {
     try {
       const stale = statSync(lock, { bigint: true });
       if (Date.now() - Number(stale.mtimeMs) > LOCK_STALE_MS) {
-        // Steal atomically: rename is exclusive, so exactly one of any
-        // concurrent stealers evicts the stale lock (the losers throw
-        // ENOENT), then the vacated slot is contended for with the same
-        // exclusive create as above.
+        // Steal by moving the lock aside, then contend for the vacated slot
+        // with the same exclusive create as above. The rename is not
+        // conditional on what it moves: between our stat and rename another
+        // stealer may have evicted the stale lock and taken a fresh one, or
+        // a stalled owner may have refreshed it. So check what we moved is
+        // the same file and still stale (a fresh lock can reuse the stale
+        // one's inode number); if not, put it back and back off.
         const tomb = join(STATE_DIR, `.lock.stale-${process.pid}`);
         renameSync(lock, tomb);
-        // Another stealer may have evicted the stale lock and taken a fresh
-        // one between our stat and rename. If what we moved is not the stale
-        // lock, put it back and back off.
         const moved = statSync(tomb, { bigint: true });
-        if (moved.dev !== stale.dev || moved.ino !== stale.ino) {
+        if (
+          moved.dev !== stale.dev ||
+          moved.ino !== stale.ino ||
+          Date.now() - Number(moved.mtimeMs) <= LOCK_STALE_MS
+        ) {
           try {
             linkSync(tomb, lock);
-          } catch {
-            // the slot was re-taken meanwhile — nothing to restore into
+          } catch (e) {
+            // EEXIST: the slot was re-taken meanwhile — nothing to restore
+            // into. Anything else (e.g. no hard links on this filesystem):
+            // move it back rather than delete a live lock.
+            if (e.code !== "EEXIST") {
+              renameSync(tomb, lock);
+              return false;
+            }
           }
           unlinkSync(tomb);
           return false;

@@ -2,6 +2,8 @@
 // deterministically. FS_FAULT picks one:
 //   steal-race  another stealer evicts the stale lock and takes a fresh one
 //               just before our takeover rename
+//   steal-touch the stale lock's owner refreshes it just before our takeover
+//               rename (same file, now fresh)
 //   pid-write   the first pid write into a new lock fails
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
@@ -19,6 +21,19 @@ if (fault === "steal-race") {
       rename(from, other);
       fs.unlinkSync(other);
       fs.writeFileSync(from, "88888", { flag: "wx" });
+    }
+    return rename(from, to);
+  };
+}
+
+if (fault === "steal-touch") {
+  const rename = fs.renameSync;
+  let touched = false;
+  fs.renameSync = (from, to) => {
+    if (!touched && basename(String(from)) === ".lock" && basename(String(to)).startsWith(".lock.stale-")) {
+      touched = true;
+      const now = new Date();
+      fs.utimesSync(from, now, now);
     }
     return rename(from, to);
   };
