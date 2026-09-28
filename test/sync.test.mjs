@@ -414,6 +414,12 @@ test("stale lock re-taken by another stealer mid-takeover: backs off, fresh lock
   assert.equal(r.lockOwner, "88888", "the other stealer's fresh lock must be put back");
 });
 
+test("stale lock refreshed by its owner mid-takeover: backs off, lock kept", () => {
+  const r = run({ ...lockScenario, lockAgeMs: 60_000, fsFault: "steal-touch" });
+  assert.deepEqual(r.calls, [], r.stderr);
+  assert.equal(r.lockOwner, "99999", "the owner's refreshed lock must be put back");
+});
+
 test("failed pid write leaves no ownerless lock: the retry sweeps", () => {
   const r = run({ ...lockScenario, fsFault: "pid-write" });
   assert.deepEqual(r.calls, [["w1", "wants-this"]], r.stderr);
