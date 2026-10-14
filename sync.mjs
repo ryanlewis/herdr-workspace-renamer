@@ -286,14 +286,25 @@ function liveTitle(agent) {
   return (cut > 0 ? head.slice(0, cut) : head).trimEnd() + "…";
 }
 
-const paneNum = (id) => {
-  const m = /:p(\d+)$/.exec(id ?? "");
-  return m ? Number(m[1]) : Infinity;
-};
-const tabNum = (id) => {
-  const m = /:t(\d+)$/.exec(id ?? "");
-  return m ? Number(m[1]) : Infinity;
-};
+// herdr pane and tab ids (`w1:p7`, `w1:tM`, `w1:p11`) end in a per-workspace
+// creation counter written in bijective base 32: digits 1-9, then A-Z
+// without I, L, O and U, then 0 standing for 32 (so pane 32 is `p0`, 33 is
+// `p11`, 64 is `p10`). Counters only go up and are never reused, so a lower
+// number always means created earlier. Ids that don't parse sort last.
+const ID_DIGITS = "123456789ABCDEFGHJKMNPQRSTVWXYZ0";
+function idNum(id, kind) {
+  const m = new RegExp(`:${kind}([0-9A-Z]+)$`).exec(id ?? "");
+  if (!m) return Infinity;
+  let n = 0;
+  for (const ch of m[1]) {
+    const d = ID_DIGITS.indexOf(ch);
+    if (d < 0) return Infinity;
+    n = n * 32 + d + 1;
+  }
+  return n;
+}
+const paneNum = (id) => idNum(id, "p");
+const tabNum = (id) => idNum(id, "t");
 
 const hasSession = (agent) =>
   typeof agent?.agent_session?.value === "string" &&
@@ -532,7 +543,8 @@ function main() {
   // in its first tab, which takes over when the old first tab closes. herdr
   // doesn't say which pane that is, and once the original `p1` has closed it
   // can be any pane of the first tab — so every pane there is a candidate.
-  // Panes are tried in id order; ids that don't parse keep list order.
+  // Panes are tried in creation (id) order, so the first one is the root
+  // unless panes have moved between tabs.
   const rootCandidates = (wsId) => {
     const firstTab = tabs.find((t) => t?.workspace_id === wsId)?.tab_id;
     if (typeof firstTab !== "string") return [];
