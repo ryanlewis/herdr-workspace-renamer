@@ -154,7 +154,9 @@ main ✚2
 herdr plugin install ryanlewis/herdr-workspace-renamer
 ```
 
-Requires herdr ≥ 0.8.0 and Node ≥ 18. Zero npm dependencies.
+Requires herdr ≥ 0.8.0. The install step downloads a prebuilt binary for your
+platform when the plugin version has a release, and checks its SHA-256. If it
+can't, it builds from source with cargo, which needs a Rust toolchain.
 
 To remove it:
 
@@ -190,6 +192,12 @@ safe: workspaces the plugin last renamed will just be treated as user-named
 until they return to their default label or are handed back. Their `$dir`
 sidebar token also stops being refreshed or cleared; if one lingers, remove it with
 `herdr workspace report-metadata <ws> --source io.rlew.workspace-renamer --clear-token dir`.
+
+### Releasing
+
+Bump `version` in both `Cargo.toml` and `herdr-plugin.toml` (they must match),
+commit, then tag `vX.Y.Z` and push the tag. The release workflow checks the tag
+against both files, builds the five binaries, and publishes the release.
 
 ## Coexistence
 

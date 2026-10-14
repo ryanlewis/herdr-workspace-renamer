@@ -1,0 +1,53 @@
+name: install-script
+
+# Checks the install-time build step (scripts/fetch-or-build.sh), its bats
+# tests, and the workflow files themselves.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install shellcheck and bats
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck bats
+
+      - name: Install actionlint
+        run: |
+          # actionlint's own download script does not verify a checksum, so
+          # this downloads the release tarball and its checksums.txt and
+          # verifies with sha256sum -c.
+          version=1.7.12
+          asset="actionlint_${version}_linux_amd64.tar.gz"
+          base_url="https://github.com/rhysd/actionlint/releases/download/v${version}"
+          curl -fsSLO "$base_url/$asset"
+          curl -fsSLO "$base_url/actionlint_${version}_checksums.txt"
+          grep -F -- "$asset" "actionlint_${version}_checksums.txt" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar xzf "$asset" -C "$RUNNER_TEMP/bin" actionlint
+          rm -f "$asset" "actionlint_${version}_checksums.txt"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # herdr runs fetch-or-build.sh through /bin/sh, so it is parsed by sh here.
+      - name: shell syntax check
+        run: sh -n scripts/fetch-or-build.sh
+
+      - name: shellcheck
+        run: shellcheck scripts/fetch-or-build.sh
+
+      - name: actionlint
+        run: actionlint .github/workflows/*.yml
+
+      - name: bats
+        run: bats tests/

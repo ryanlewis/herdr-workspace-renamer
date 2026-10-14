@@ -5,6 +5,13 @@ version = "0.1.0"
 min_herdr_version = "0.8.0"
 platforms = ["macos", "linux"]
 
+# Run by `herdr plugin install` after cloning. Downloads the prebuilt binary
+# published for this version and platform and verifies its SHA-256, falling
+# back to `cargo build --release --locked` on any miss, so a Rust toolchain is
+# only required when no matching release exists (see scripts/fetch-or-build.sh).
+[[build]]
+command = ["/bin/sh", "scripts/fetch-or-build.sh"]
+
 [[events]]
 on = "pane.agent_detected"         # session (re)appears — also covers --resume
 command = ["target/release/herdr-workspace-renamer"]
