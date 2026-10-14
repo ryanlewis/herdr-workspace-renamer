@@ -48,7 +48,8 @@ will pick it up.
 
 ## How it works
 
-On each herdr event the plugin joins each agent's session registry against
+The plugin is a single Rust binary, which herdr runs from
+`target/release/herdr-workspace-renamer` on each event. On each run the plugin joins each agent's session registry against
 `herdr agent list` (session id ↔ pane ↔ workspace), then renames a workspace
 only when its current label is the default (basename of the root pane's cwd)
 or the plugin's own last write, tracked in plugin state. herdr's root pane is the first
@@ -70,8 +71,13 @@ opinion"). Current providers:
 When the adapter has no user-set name, the primary agent's terminal title
 (`terminal_title_stripped` in `herdr agent list`) is used instead.
 
-Adding another agent means writing one adapter, with no changes to the
-reconcile core.
+Adding another agent means writing one adapter (a `Provider` in
+`src/providers.rs`), with no changes to the reconcile core.
+
+Overlapping runs are serialized by a lock file in the plugin state
+directory, so two sweeps never race on the state file. A run that finds the
+lock busy waits up to 3 seconds, and skips if a sweep that started after it
+arrived has already covered its event.
 
 Fail-safe by design: any parse or shape surprise is a silent no-op with one
 line to stderr (visible via
@@ -165,11 +171,17 @@ herdr plugin action invoke io.rlew.workspace-renamer.sync-now
 
 ### Development
 
+Needs a Rust toolchain (stable, edition 2024).
+
 ```sh
 git clone https://github.com/ryanlewis/herdr-workspace-renamer
 cd herdr-workspace-renamer
+cargo build --release    # herdr runs target/release/herdr-workspace-renamer
 herdr plugin link .      # and later: herdr plugin unlink io.rlew.workspace-renamer
 ```
+
+Rebuild with `cargo build --release` after a change; the linked plugin
+picks up the new binary on its next event.
 
 Plugin state (a map of workspace id → last label the plugin wrote, used to
 tell its own renames apart from yours) lives in
@@ -190,18 +202,21 @@ those labels.
 ## Test
 
 ```sh
-node test/sync.test.mjs   # offline: fake herdr CLI + fake session registries
-node sync.mjs --dry-run   # against live herdr state, prints planned renames
+cargo test                 # offline: in-memory and fake herdr, fake session registries
+cargo run -- --dry-run     # against live herdr state, prints planned renames
 ```
+
+Most scenarios are unit tests that run a sweep against an in-memory herdr
+(`src/sweep/tests.rs`). `tests/cli.rs` runs the built binary against a fake
+herdr CLI (`tests/fake-herdr.sh`) for the command line, environment and
+lock behaviour. Lock races are staged through the `LockFs` seam in
+`src/lock.rs`.
 
 `--dry-run` outside herdr reads the real plugin state directory (if present),
 so the preview matches what event-driven runs would actually do — including
 updates to workspaces the plugin already owns.
 
-Tests use the built-in `node:test` runner — Node ≥ 20 for development. (The
-test file is run directly rather than via `node --test`: glob arguments need
-Node ≥ 21, and this repo's `test/` directory name collides with the runner's
-default discovery patterns.)
+`--version` prints the version and exits without touching herdr or state.
 
 ## Caveats
 
