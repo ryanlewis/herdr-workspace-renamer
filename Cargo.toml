@@ -1,0 +1,17 @@
+[package]
+name = "herdr-workspace-renamer"
+version = "0.1.0"
+edition = "2024"
+description = "Sync agent session names onto herdr workspace labels"
+license = "MIT"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# preserve_order keeps state.json keys in insertion order, as the Node
+# version wrote them.
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[profile.release]
+strip = true
+lto = true

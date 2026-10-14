@@ -11,14 +11,16 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node: [20, 22, 24]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: ${{ matrix.node }}
-      - run: node test/sync.test.mjs
+      # The runner image's preinstalled stable toolchain: no third-party
+      # action to pin, and the image refresh doubles as a newer-stable check.
+      - name: Rust toolchain in use
+        run: |
+          rustc --version
+          cargo --version
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked

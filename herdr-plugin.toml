@@ -7,25 +7,25 @@ platforms = ["macos", "linux"]
 
 [[events]]
 on = "pane.agent_detected"         # session (re)appears — also covers --resume
-command = ["node", "sync.mjs"]
+command = ["target/release/herdr-workspace-renamer"]
 [[events]]
 on = "pane.agent_status_changed"   # main heartbeat: fires on every turn boundary
-command = ["node", "sync.mjs"]
+command = ["target/release/herdr-workspace-renamer"]
 [[events]]
 on = "pane.focused"                # catches "renamed then switched away" sooner
-command = ["node", "sync.mjs"]
+command = ["target/release/herdr-workspace-renamer"]
 [[events]]
 on = "workspace.renamed"           # a rename to "?" hands the workspace back
-command = ["node", "sync.mjs"]
+command = ["target/release/herdr-workspace-renamer"]
 
 [[actions]]
 id = "sync-now"
 title = "Sync workspace names now"
 contexts = ["workspace"]
-command = ["node", "sync.mjs"]
+command = ["target/release/herdr-workspace-renamer"]
 
 [[actions]]
 id = "reset"
 title = "Hand workspace back to Workspace Renamer"
 contexts = ["workspace"]
-command = ["node", "sync.mjs", "--reset"]
+command = ["target/release/herdr-workspace-renamer", "--reset"]
