@@ -1071,3 +1071,64 @@ test("? label with p1 gone restores the presumed root's folder", () => {
   });
   assert.deepEqual(r.calls, [["w1", "beta"]], r.stderr);
 });
+
+// ---- herdr id order (bijective base 32) ---------------------------------
+
+test("pane p0 is pane 32: never primary over p2 in the same tab", () => {
+  const r = run({
+    sessions: [
+      { pid: 1, sessionId: "s2", name: "owner-name" },
+      { pid: 2, sessionId: "s32", name: "late-guest" },
+    ],
+    world: {
+      agents: [agent("s32", "w1:p0", "w1:t1", "w1"), agent("s2", "w1:p2", "w1:t1", "w1")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "owner-name"]], r.stderr);
+});
+
+test("pane p11 is pane 33: never primary over pC (12)", () => {
+  const r = run({
+    sessions: [
+      { pid: 1, sessionId: "s12", name: "owner-name" },
+      { pid: 2, sessionId: "s33", name: "late-guest" },
+    ],
+    world: {
+      agents: [agent("s33", "w1:p11", "w1:t1", "w1"), agent("s12", "w1:pC", "w1:t1", "w1")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "owner-name"]], r.stderr);
+});
+
+test("lettered tab ids order correctly: tA (10) beats tM (20)", () => {
+  const r = run({
+    sessions: [
+      { pid: 1, sessionId: "sA", name: "first-tab" },
+      { pid: 2, sessionId: "sM", name: "later-tab" },
+    ],
+    world: {
+      agents: [agent("sM", "w1:p1", "w1:tM", "w1"), agent("sA", "w1:p9", "w1:tA", "w1")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "first-tab"]], r.stderr);
+});
+
+test("? label: presumed root is the oldest first-tab pane, p2 before p0", () => {
+  const r = run({
+    world: {
+      agents: [],
+      workspaces: [ws("w1", "?")],
+      panes: {
+        ...pane("w1:p0", "/Users/ryan/dev/late", "w1:t1"),
+        ...pane("w1:p2", "/Users/ryan/dev/beta", "w1:t1"),
+      },
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "beta"]], r.stderr);
+});
