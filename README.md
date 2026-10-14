@@ -51,7 +51,10 @@ will pick it up.
 On each herdr event the plugin joins each agent's session registry against
 `herdr agent list` (session id ↔ pane ↔ workspace), then renames a workspace
 only when its current label is the default (basename of the root pane's cwd)
-or the plugin's own last write, tracked in plugin state.
+or the plugin's own last write, tracked in plugin state. herdr's root pane is the first
+pane created in the workspace's first tab, and herdr doesn't report which one
+that is once the original has closed, so a label matching the folder of any
+pane in the first tab counts as the default.
 
 Name resolution is provider-based: each agent type owns a small adapter that
 maps a herdr agent record to the user's intended session name (or "no

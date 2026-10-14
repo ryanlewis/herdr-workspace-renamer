@@ -450,7 +450,14 @@ function stampSweepStart() {
 function main() {
   const agents = herdr("agent", "list")?.result?.agents;
   const workspaces = herdr("workspace", "list")?.result?.workspaces;
-  if (!Array.isArray(agents) || !Array.isArray(workspaces)) {
+  const tabs = herdr("tab", "list")?.result?.tabs;
+  const panes = herdr("pane", "list")?.result?.panes;
+  if (
+    !Array.isArray(agents) ||
+    !Array.isArray(workspaces) ||
+    !Array.isArray(tabs) ||
+    !Array.isArray(panes)
+  ) {
     warn("unexpected herdr list output shape; no-op");
     return;
   }
@@ -520,12 +527,28 @@ function main() {
     return title ? { name: title, userNamed: false } : null;
   };
 
+  // The panes that could be the workspace's root, presumed root first. herdr
+  // labels a workspace after its root pane's folder: the first pane created
+  // in its first tab, which takes over when the old first tab closes. herdr
+  // doesn't say which pane that is, and once the original `p1` has closed it
+  // can be any pane of the first tab — so every pane there is a candidate.
+  // Panes are tried in id order; ids that don't parse keep list order.
+  const rootCandidates = (wsId) => {
+    const firstTab = tabs.find((t) => t?.workspace_id === wsId)?.tab_id;
+    if (typeof firstTab !== "string") return [];
+    return panes
+      .filter(
+        (p) => p?.tab_id === firstTab && typeof p.cwd === "string" && p.cwd !== "",
+      )
+      .sort((a, b) => paneNum(a.pane_id) - paneNum(b.pane_id) || 0);
+  };
+
   const plan = [];
   for (const ws of workspaces) {
     const wsId = ws?.workspace_id;
     const label = ws?.label;
     if (typeof wsId !== "string" || typeof label !== "string") continue;
-    touchLock(); // each iteration can spend a herdr call on `pane get`
+    touchLock(); // each iteration can spend herdr calls on metadata
 
     // Hand-back: a `?` label or the reset action makes this workspace
     // unclaimed again, whatever its label says.
@@ -543,14 +566,13 @@ function main() {
       if (!handBack) continue;
     }
 
-    let rootCwd;
-    try {
-      rootCwd = herdr("pane", "get", `${wsId}:p1`)?.result?.pane?.cwd;
-    } catch (e) {
-      warn(`pane get ${wsId}:p1 failed (${e.message}); skipping ${wsId}`);
-      continue;
-    }
-    if (typeof rootCwd !== "string" || rootCwd === "") continue;
+    const roots = rootCandidates(wsId);
+    if (roots.length === 0) continue;
+    // A label matching any candidate's folder is the default. Otherwise the
+    // presumed root stands in (for `$dir`, and the folder a hand-back
+    // restores).
+    const defaultRoot = roots.find((p) => basename(p.cwd) === label);
+    const rootCwd = (defaultRoot ?? roots[0]).cwd;
 
     if (handBack) {
       if (want !== null) syncSessionToken(ws, null);
@@ -572,7 +594,7 @@ function main() {
     // Ownership guard: only touch a label that is the default (root-pane cwd
     // basename) or our own last write. Anything else → the user named this
     // workspace, and their choice stands until they hand it back.
-    if (label !== basename(rootCwd) && label !== state[wsId]) {
+    if (!defaultRoot && label !== state[wsId]) {
       if (wsId in state) {
         // user overrode our write — locked from now on; retire our dir row too
         delete state[wsId];

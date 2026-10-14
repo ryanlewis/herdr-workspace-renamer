@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Fake herdr CLI for offline tests. Reads canned world state from
-// $FAKE_HERDR_WORLD (JSON: {agents, workspaces, panes}) and appends any
+// $FAKE_HERDR_WORLD (JSON: {agents, workspaces, panes, tabs?}) and appends any
 // `workspace rename` calls to $FAKE_HERDR_CALLS.
 import { readFileSync, appendFileSync } from "node:fs";
 
@@ -11,6 +11,14 @@ if (!process.env.FAKE_HERDR_WORLD) process.exit(0);
 const world = JSON.parse(readFileSync(process.env.FAKE_HERDR_WORLD, "utf8"));
 const [group, verb, ...rest] = process.argv.slice(2);
 
+// world.panes is keyed by pane id; a pane without tab_id/workspace_id sits in
+// its workspace's first tab.
+const paneList = () =>
+  Object.values(world.panes || {}).map((p) => {
+    const wsId = p.pane_id.split(":")[0];
+    return { workspace_id: wsId, tab_id: `${wsId}:t1`, ...p };
+  });
+
 if (group === "agent" && verb === "list") {
   process.stdout.write(
     JSON.stringify({ id: "cli:agent:list", result: { agents: world.agents, type: "agent_list" } }),
@@ -19,6 +27,19 @@ if (group === "agent" && verb === "list") {
   process.stdout.write(
     JSON.stringify({ id: "cli:workspace:list", result: { type: "workspace_list", workspaces: world.workspaces } }),
   );
+} else if (group === "pane" && verb === "list") {
+  process.stdout.write(
+    JSON.stringify({ id: "cli:pane:list", result: { panes: paneList(), type: "pane_list" } }),
+  );
+} else if (group === "tab" && verb === "list") {
+  // world.tabs (in display order) when a test needs it; otherwise one tab per
+  // distinct tab_id among the panes, in pane order.
+  const tabs =
+    world.tabs ??
+    [...new Map(paneList().map((p) => [p.tab_id, p.workspace_id]))].map(
+      ([tab_id, workspace_id]) => ({ tab_id, workspace_id }),
+    );
+  process.stdout.write(JSON.stringify({ id: "cli:tab:list", result: { tabs, type: "tab_list" } }));
 } else if (group === "pane" && verb === "get") {
   const pane = world.panes[rest[0]];
   if (!pane) {

@@ -444,13 +444,13 @@ test("session id missing from registry: workspace skipped", () => {
   assert.deepEqual(r.calls, []);
 });
 
-test("missing root pane: safe skip, exit 0", () => {
+test("no panes in the workspace: safe skip, exit 0", () => {
   const r = run({
     sessions: [{ pid: 1, sessionId: "s1", name: "wants-this" }],
     world: {
       agents: [agent("s1", "w1:p2", "w1:t1", "w1")],
       workspaces: [ws("w1", "notes")],
-      panes: {}, // no p1 → pane get exits 1
+      panes: {}, // no panes at all → no root candidate
     },
   });
   assert.deepEqual(r.calls, []);
@@ -1004,4 +1004,70 @@ test("? label with only a live title hands back to the title", () => {
   });
   assert.deepEqual(r.calls, [["w1", "Fix login redirect"]], r.stderr);
   assert.equal(r.stateAfter.w1, "Fix login redirect");
+});
+
+// ---- root pane after the original p1 closed -----------------------------
+
+const pane = (id, cwd, tabId) => ({ [id]: { pane_id: id, cwd, tab_id: tabId } });
+
+test("first pane closed: the next first-tab pane's folder is the default", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "wants-this" }],
+    world: {
+      agents: [agent("s1", "w1:p2", "w1:t1", "w1")],
+      workspaces: [ws("w1", "beta")],
+      panes: pane("w1:p2", "/Users/ryan/dev/beta", "w1:t1"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "wants-this"]], r.stderr);
+  assert.equal(r.stderr.includes("pane get"), false, "no per-workspace pane lookup");
+});
+
+test("first tab closed: the new first tab's pane is the root", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "wants-this" }],
+    world: {
+      agents: [agent("s1", "w1:p3", "w1:t2", "w1")],
+      workspaces: [ws("w1", "delta")],
+      panes: {
+        ...pane("w1:p4", "/Users/ryan/dev/eps", "w1:t2"),
+        ...pane("w1:p3", "/Users/ryan/dev/delta", "w1:t2"),
+      },
+      tabs: [{ tab_id: "w1:t2", workspace_id: "w1" }],
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "wants-this"]], r.stderr);
+});
+
+test("a later tab's folder never makes a label default", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "wants-this" }],
+    world: {
+      agents: [agent("s1", "w1:p2", "w1:t1", "w1")],
+      workspaces: [ws("w1", "floor")],
+      panes: {
+        ...pane("w1:p2", "/Users/ryan/dev/notes", "w1:t1"),
+        ...pane("w1:p7", "/Users/ryan/dev/floor", "w1:t3"),
+      },
+      tabs: [
+        { tab_id: "w1:t1", workspace_id: "w1" },
+        { tab_id: "w1:t3", workspace_id: "w1" },
+      ],
+    },
+  });
+  assert.deepEqual(r.calls, [], r.stderr);
+});
+
+test("? label with p1 gone restores the presumed root's folder", () => {
+  const r = run({
+    world: {
+      agents: [],
+      workspaces: [ws("w1", "?")],
+      panes: {
+        ...pane("w1:p3", "/Users/ryan/dev/gamma", "w1:t1"),
+        ...pane("w1:p2", "/Users/ryan/dev/beta", "w1:t1"),
+      },
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "beta"]], r.stderr);
 });
