@@ -89,7 +89,7 @@ cargo_was_called() {
   run sh "$SCRIPT"
   [ "$status" -eq 0 ]
   [ -x "$RENAMER_OUT" ]
-  ! cargo_was_called
+  [ ! -s "$CARGO_LOG" ]
   [[ "$output" == *"installed prebuilt v9.9.9 (x86_64-unknown-linux-musl)"* ]]
 }
 
@@ -149,7 +149,7 @@ cargo_was_called() {
   run sh "$SCRIPT"
   [ "$status" -eq 0 ]
   [ -x "$RENAMER_OUT" ]
-  ! cargo_was_called
+  [ ! -s "$CARGO_LOG" ]
   [[ "$output" == *"(armv7-unknown-linux-musleabihf)"* ]]
 }
 
