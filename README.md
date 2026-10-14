@@ -2,9 +2,10 @@
 
 A [herdr](https://herdr.dev) plugin that syncs agent session names onto herdr
 workspace labels. When you name your session — `/rename` in Claude Code and
-Codex alike — the containing workspace label follows, unless the workspace
-already has a non-default name, in which case it is left alone until you hand
-it back.
+Codex alike — the containing workspace label follows. Until you do, the label
+follows the agent's live terminal title (for Claude Code, the task summary it
+keeps up to date as you work). A workspace that already has a non-default name
+is left alone until you hand it back.
 
 ## Why
 
@@ -21,7 +22,12 @@ follow it.
 - A workspace you named yourself — manually, via `worktree create --label`, or
   any other way — is left alone, even if the session is renamed later, until
   you hand it back (see below).
-- Auto-derived session names (`my-project-3f`) never rename anything.
+- A session with no name you set (Claude Code's auto-derived `my-project-3f`,
+  or an unnamed Codex thread) uses the agent's live terminal title instead,
+  and the label follows the title as it changes. Placeholder titles that only
+  name the product ("Claude Code", "claude: <dir>") are ignored, and titles
+  longer than 32 characters are cut at a word with `…`. A name you set with
+  `/rename` always wins over the title.
 - In multi-agent workspaces only the primary agent (lowest-numbered agent pane
   of the first tab) drives the label; guest sessions are ignored.
 - Every trigger event reconciles *all* workspaces, so missed events self-heal
@@ -57,6 +63,9 @@ opinion"). Current providers:
   explicitly named threads, so index presence is the user-named signal. Codex
   panes are joined via the session id that herdr's Codex SessionStart hook
   integration reports; panes the hook hasn't reported are left alone.
+
+When the adapter has no user-set name, the primary agent's terminal title
+(`terminal_title_stripped` in `herdr agent list`) is used instead.
 
 Adding another agent means writing one adapter, with no changes to the
 reconcile core.
@@ -103,7 +112,8 @@ collapses the empty line — they render exactly as before.
 The reverse case: when you name a workspace yourself, the plugin leaves the
 label alone, so the session name it would have used is not shown anywhere. For
 those workspaces the plugin reports the primary agent's user-named session
-name as the custom sidebar token `$session`. It is cleared when it no longer
+name as the custom sidebar token `$session` (a live terminal title is never
+shown here). It is cleared when it no longer
 applies: the label equals the session name, the session is gone, or the
 session has no user-set name. A workspace labelled after its session never
 shows it twice.

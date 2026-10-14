@@ -884,3 +884,124 @@ test("--dry-run reports no $session metadata", () => {
   });
   assert.deepEqual(r.meta, []);
 });
+
+// ---- live terminal title fallback ---------------------------------------
+
+const titled = (title, ...args) => ({ ...agent(...args), terminal_title_stripped: title });
+
+test("unnamed session: live terminal title renames default-labelled workspace", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "notes-27", nameSource: "derived" }],
+    world: {
+      agents: [titled("Fix login redirect", "s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "Fix login redirect"]], r.stderr);
+  assert.equal(r.stateAfter.w1, "Fix login redirect", "title rename recorded as ours");
+});
+
+test("live title change updates a label the plugin set", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "notes-27", nameSource: "derived" }],
+    world: {
+      agents: [titled("Second topic", "s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "First topic")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+    state: { w1: "First topic" },
+  });
+  assert.deepEqual(r.calls, [["w1", "Second topic"]], r.stderr);
+});
+
+test("user-set session name beats the live title", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "my-cool-task" }],
+    world: {
+      agents: [titled("Some summary", "s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "my-cool-task"]], r.stderr);
+});
+
+test("product-name placeholder titles never rename", () => {
+  for (const t of ["Claude Code", "claude", "claude: notes", "  "]) {
+    const r = run({
+      sessions: [{ pid: 1, sessionId: "s1", name: "notes-27", nameSource: "derived" }],
+      world: {
+        agents: [titled(t, "s1", "w1:p1", "w1:t1", "w1")],
+        workspaces: [ws("w1", "notes")],
+        panes: rootPane("w1", "/Users/ryan/dev/notes"),
+      },
+    });
+    assert.deepEqual(r.calls, [], `title ${JSON.stringify(t)}: ${r.stderr}`);
+  }
+});
+
+test("a summary that merely contains the agent name still renames", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "notes-27", nameSource: "derived" }],
+    world: {
+      agents: [titled("Claude Code hooks setup", "s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "Claude Code hooks setup"]], r.stderr);
+});
+
+test("long live title cut at a word boundary with an ellipsis", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "notes-27", nameSource: "derived" }],
+    world: {
+      agents: [titled("Ntfy arloo-estate-alerts JSON formatting", "s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "Ntfy arloo-estate-alerts JSON…"]], r.stderr);
+});
+
+test("live title never touches a workspace the user named", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "notes-27", nameSource: "derived" }],
+    world: {
+      agents: [titled("Some summary", "s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "user-chose-this")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [], r.stderr);
+  assert.deepEqual(r.meta, [], "a live title is never shown as $session");
+});
+
+test("guest pane's live title ignored — only the primary drives the label", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "notes-27", nameSource: "derived" }],
+    world: {
+      agents: [
+        agent("s1", "w1:p1", "w1:t1", "w1"),
+        titled("Guest summary", "guest", "w1:p2", "w1:t1", "w1"),
+      ],
+      workspaces: [ws("w1", "notes")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [], r.stderr);
+});
+
+test("? label with only a live title hands back to the title", () => {
+  const r = run({
+    sessions: [{ pid: 1, sessionId: "s1", name: "notes-27", nameSource: "derived" }],
+    world: {
+      agents: [titled("Fix login redirect", "s1", "w1:p1", "w1:t1", "w1")],
+      workspaces: [ws("w1", "?")],
+      panes: rootPane("w1", "/Users/ryan/dev/notes"),
+    },
+  });
+  assert.deepEqual(r.calls, [["w1", "Fix login redirect"]], r.stderr);
+  assert.equal(r.stateAfter.w1, "Fix login redirect");
+});

@@ -254,11 +254,36 @@ const PROVIDERS = [claudeProvider, codexProvider];
 // the user typed what they want. The cap counts code points, not UTF-16
 // units, so it can't split an emoji's surrogate pair.
 function clean(name) {
-  const scrubbed = name
+  return [...scrub(name)].slice(0, MAX_LABEL).join("").trim();
+}
+
+function scrub(text) {
+  return text
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "") // controls; \t \n \r survive to become spaces
     .replace(/\s+/g, " ")
     .trim();
-  return [...scrubbed].slice(0, MAX_LABEL).join("").trim();
+}
+
+// The agent's live terminal title as herdr captured it (OSC title, spinner
+// stripped), cleaned, or "" when there is no real one yet. Before Claude Code
+// writes its first task summary the title is a product-name placeholder —
+// "Claude Code", "claude", "claude: <dir>" — which says nothing. Matching
+// stays exact so a real summary that merely contains the name survives.
+function liveTitle(agent) {
+  const raw = agent?.terminal_title_stripped;
+  if (typeof raw !== "string" || typeof agent.agent !== "string") return "";
+  const title = scrub(raw);
+  const t = title.toLowerCase();
+  const a = agent.agent.toLowerCase();
+  if (t === a || t === `${a} code` || t.startsWith(`${a}: `)) return "";
+  // A summary is prose, so an over-long one is cut at the last word that
+  // fits and marked with "…", rather than mid-word the way clean() caps a
+  // name the user typed.
+  const chars = [...title];
+  if (chars.length <= MAX_LABEL) return title;
+  const head = chars.slice(0, MAX_LABEL - 1).join("");
+  const cut = head.lastIndexOf(" ");
+  return (cut > 0 ? head.slice(0, cut) : head).trimEnd() + "…";
 }
 
 const paneNum = (id) => {
@@ -461,8 +486,10 @@ function main() {
     }
   }
 
-  // The user-named session name of the workspace's primary agent, cleaned, or
-  // null when there isn't one.
+  // The name the workspace's primary agent should give it, cleaned, as
+  // { name, userNamed }, or null when there isn't one. A user-set session
+  // name wins; otherwise the agent's live terminal title (for Claude Code,
+  // the task summary it keeps up to date) stands in.
   const sessionNameFor = (wsId) => {
     const wsAgents = agents.filter((a) => a?.workspace_id === wsId);
     const joined = wsAgents.filter(hasSession);
@@ -487,8 +514,10 @@ function main() {
 
     const resolve = resolverFor(primary);
     const rawName = resolve ? resolve(primary) : null;
-    if (typeof rawName !== "string") return null;
-    return clean(rawName) || null;
+    const userName = typeof rawName === "string" ? clean(rawName) : "";
+    if (userName) return { name: userName, userNamed: true };
+    const title = liveTitle(primary);
+    return title ? { name: title, userNamed: false } : null;
   };
 
   const plan = [];
@@ -501,8 +530,12 @@ function main() {
     // Hand-back: a `?` label or the reset action makes this workspace
     // unclaimed again, whatever its label says.
     const handBack = label === SENTINEL || wsId === RESET_ID;
-    let want = sessionNameFor(wsId);
+    const found = sessionNameFor(wsId);
+    let want = found?.name ?? null;
     if (want === SENTINEL) want = null; // never write the sentinel back
+    // Only a name the user set is worth a `$session` row; a live title under
+    // a workspace they named would just repeat the terminal.
+    const userWant = found?.userNamed ? want : null;
     // `$session` is shown only for a user-named workspace with a session name
     // it isn't carrying (the guard branch below); every other path clears it.
     if (want === null) {
@@ -546,7 +579,7 @@ function main() {
         stateDirty = true;
         clearDirToken(wsId);
       }
-      syncSessionToken(ws, label === want ? null : want); // no duplicate row
+      syncSessionToken(ws, label === userWant ? null : userWant); // no duplicate row
       continue;
     }
 
