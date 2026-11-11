@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use rusqlite::{Connection, OpenFlags};
+
 use crate::json::lenient;
 
 /// Session id → the name the user set, or `None` for a session the registry
@@ -44,7 +46,7 @@ impl Registry {
     pub fn new(home: PathBuf) -> Self {
         Self {
             home,
-            providers: vec![Box::new(Claude), Box::new(Codex)],
+            providers: vec![Box::new(Claude), Box::new(Codex), Box::new(Hermes)],
             loaded: HashMap::new(),
         }
     }
@@ -162,6 +164,85 @@ impl Provider for Codex {
             .collect();
         (!names.is_empty()).then_some(names)
     }
+}
+
+/// Hermes Agent: one SQLite database per profile — `<home>/.hermes/state.db`
+/// for the default profile and `<home>/.hermes/profiles/<profile>/state.db`
+/// for each named one. The `sessions` table carries both halves of the join:
+/// `id` is the session id herdr gets from the hermes integration's
+/// `pane report-agent-session` call, `title` is the display name, and
+/// `title_source` says who wrote that title — `user` only after an explicit
+/// `hermes sessions rename`, `llm` for the auto-generated title, and
+/// `derived`/NULL otherwise. Only `user` counts as a name the user set: an
+/// auto title is rewritten as the conversation moves, so following it would
+/// relabel the workspace on every turn and fight the pane title the agent
+/// already reports.
+///
+/// These databases are live. Hermes keeps them open in WAL mode and the
+/// default one is well over a gigabyte, so every open is read-only and the
+/// query is narrow — a sweep must never block or mutate a running agent.
+/// Anything unreadable (missing file, absent shm, truncated or corrupt
+/// database, a schema without `sessions`) means "no session info here".
+struct Hermes;
+
+impl Provider for Hermes {
+    fn agent(&self) -> &'static str {
+        "hermes"
+    }
+
+    fn load(&self, home: &Path) -> Option<Names> {
+        let mut names = Names::new();
+        for db in hermes_databases(home) {
+            for (id, title) in user_titled_sessions(&db) {
+                // First database in scan order wins, so the outcome never
+                // depends on which profile was touched last: the default
+                // profile, then the named profiles alphabetically.
+                names.entry(id).or_insert(Some(title));
+            }
+        }
+        (!names.is_empty()).then_some(names)
+    }
+}
+
+/// The Hermes profile databases under `home`, default profile first.
+fn hermes_databases(home: &Path) -> Vec<PathBuf> {
+    let root = home.join(".hermes");
+    let mut paths = Vec::new();
+    let default_db = root.join("state.db");
+    if default_db.is_file() {
+        paths.push(default_db);
+    }
+    let mut profiles: Vec<PathBuf> = match fs::read_dir(root.join("profiles")) {
+        Ok(entries) => entries
+            .flatten()
+            .map(|entry| entry.path().join("state.db"))
+            .filter(|path| path.is_file())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    profiles.sort();
+    paths.append(&mut profiles);
+    paths
+}
+
+/// `(session id, user-set title)` from one Hermes database, or nothing when
+/// it cannot be opened or queried read-only.
+fn user_titled_sessions(path: &Path) -> Vec<(String, String)> {
+    let Ok(conn) = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, title FROM sessions \
+         WHERE title_source = 'user' AND title IS NOT NULL AND title <> ''",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
 }
 
 /// Milliseconds since the epoch for an ISO 8601 timestamp: `YYYY-MM-DD`,
@@ -285,6 +366,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
+    use rusqlite::params;
     use serde_json::{Value, json};
 
     fn claude_home(sessions: &[Value]) -> TempDir {
@@ -459,5 +541,120 @@ mod tests {
         ] {
             assert_eq!(parse_timestamp(bad), None, "{bad}");
         }
+    }
+
+    /// Writes a Hermes profile database at `<home>/<relative>` with one row
+    /// per `(id, title, title_source)`.
+    fn hermes_db(home: &TempDir, relative: &str, rows: &[(&str, Option<&str>, Option<&str>)]) {
+        let path = home.path().join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, title_source TEXT);",
+        )
+        .unwrap();
+        for (id, title, source) in rows {
+            conn.execute(
+                "INSERT INTO sessions (id, title, title_source) VALUES (?1, ?2, ?3)",
+                params![id, title, source],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn hermes_user_named_session() {
+        let home = TempDir::new();
+        hermes_db(
+            &home,
+            ".hermes/state.db",
+            &[("local-abc", Some("rename the sessions"), Some("user"))],
+        );
+        assert_eq!(
+            lookup(&home, "hermes", "local-abc").as_deref(),
+            Some("rename the sessions")
+        );
+        assert_eq!(lookup(&home, "hermes", "local-untouched"), None);
+    }
+
+    #[test]
+    fn hermes_auto_titles_are_no_opinion() {
+        let home = TempDir::new();
+        hermes_db(
+            &home,
+            ".hermes/state.db",
+            &[
+                ("local-llm", Some("Auto title"), Some("llm")),
+                ("local-derived", Some("2026-11-11 slice"), Some("derived")),
+                ("local-unsourced", Some("no source"), None),
+                ("local-blank", Some(""), Some("user")),
+                ("local-null", None, Some("user")),
+            ],
+        );
+        for id in [
+            "local-llm",
+            "local-derived",
+            "local-unsourced",
+            "local-blank",
+            "local-null",
+        ] {
+            assert_eq!(lookup(&home, "hermes", id), None, "{id}");
+        }
+    }
+
+    #[test]
+    fn hermes_named_profile_databases_are_scanned() {
+        let home = TempDir::new();
+        hermes_db(&home, ".hermes/state.db", &[]);
+        hermes_db(
+            &home,
+            ".hermes/profiles/apollo/state.db",
+            &[("local-profile", Some("apollo work"), Some("user"))],
+        );
+        assert_eq!(
+            lookup(&home, "hermes", "local-profile").as_deref(),
+            Some("apollo work")
+        );
+    }
+
+    #[test]
+    fn hermes_default_profile_wins_a_duplicate_id() {
+        let home = TempDir::new();
+        hermes_db(
+            &home,
+            ".hermes/profiles/athena/state.db",
+            &[("local-dup", Some("from the profile"), Some("user"))],
+        );
+        hermes_db(
+            &home,
+            ".hermes/state.db",
+            &[("local-dup", Some("from the default profile"), Some("user"))],
+        );
+        assert_eq!(
+            lookup(&home, "hermes", "local-dup").as_deref(),
+            Some("from the default profile")
+        );
+    }
+
+    #[test]
+    fn hermes_unreadable_databases_are_no_opinion() {
+        let home = TempDir::new();
+        let db = home.path().join(".hermes/state.db");
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        fs::write(&db, "not a database").unwrap();
+        assert_eq!(lookup(&home, "hermes", "local-abc"), None);
+
+        // A readable database without the sessions table is equally silent.
+        hermes_db(&home, ".hermes/profiles/odd/state.db", &[]);
+        let conn = Connection::open(home.path().join(".hermes/profiles/odd/state.db")).unwrap();
+        conn.execute_batch("DROP TABLE sessions; CREATE TABLE something_else (id TEXT);")
+            .unwrap();
+        assert_eq!(lookup(&home, "hermes", "local-abc"), None);
+    }
+
+    #[test]
+    fn hermes_missing_home_is_no_opinion() {
+        let home = TempDir::new();
+        assert_eq!(lookup(&home, "hermes", "local-abc"), None);
     }
 }
