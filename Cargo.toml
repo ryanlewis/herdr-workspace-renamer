@@ -11,6 +11,10 @@ serde = { version = "1", features = ["derive"] }
 # preserve_order keeps state.json keys in insertion order, as the Node
 # version wrote them.
 serde_json = { version = "1", features = ["preserve_order"] }
+# The Hermes Agent provider reads its session registry out of SQLite.
+# `bundled` compiles SQLite in rather than depending on a system libsqlite3
+# being present at build or run time.
+rusqlite = { version = "0.37", features = ["bundled"] }
 
 [profile.release]
 strip = true

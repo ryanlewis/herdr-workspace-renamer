@@ -67,6 +67,14 @@ opinion"). Current providers:
   explicitly named threads, so index presence is the user-named signal. Codex
   panes are joined via the session id that herdr's Codex SessionStart hook
   integration reports; panes the hook hasn't reported are left alone.
+- **Hermes Agent** — reads the `sessions` table of
+  `~/.hermes/state.db` (default profile) and
+  `~/.hermes/profiles/<profile>/state.db` (each named profile), read-only.
+  Only `title_source = 'user'` counts, i.e. a title set with
+  `hermes sessions rename`; the auto-generated `llm`/`derived` titles are
+  ignored so the label does not chase the agent's own retitling. Hermes panes
+  are joined through the session id its herdr integration reports on every
+  turn.
 
 When the adapter has no user-set name, the primary agent's terminal title
 (`terminal_title_stripped` in `herdr agent list`) is used instead.
